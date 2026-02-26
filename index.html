@@ -324,6 +324,57 @@ html, body {
   border: 1px solid var(--border);
 }
 
+/* ─── Palette buttons ─── */
+.palette-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.palette-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+  min-height: 28px;
+  flex-shrink: 0;
+  transition: background 0.1s, border-color 0.1s;
+}
+.palette-btn:hover { background: var(--border); }
+.palette-btn.active { background: var(--accent-dim); border-color: var(--accent); color: white; }
+.palette-btn-swatches {
+  display: flex;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.palette-btn-swatch {
+  width: 12px; height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.palette-btn-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  text-align: left;
+}
+.palette-btn-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
 /* ─── Algorithm grid ─── */
 .algo-grid {
   display: grid;
@@ -669,7 +720,60 @@ html, body {
 }
 .preset-item-delete:hover { color: #ff4444; background: rgba(255,68,68,0.15); }
 
-/* ─── Desktop side-panel mode ─── */
+/* ─── Main Area wrapper ─── */
+#main-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─── Left Drawer (hidden on mobile) ─── */
+#drawer-left {
+  display: none;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+#left-panels {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 8px 12px 12px;
+  gap: 4px;
+  overflow: hidden;
+}
+#left-panels .panel {
+  display: flex !important;
+  flex-direction: column;
+}
+#left-panels #panel-palette {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+#left-panels #panel-palette > .ctrl-group:first-child {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#left-panels .palette-buttons {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+#left-panels #panel-input {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+/* ─── Desktop side-panel mode (single sidebar) ─── */
 @media (min-width: 900px) and (min-height: 500px) {
   #app { flex-direction: row; }
   #drawer {
@@ -685,11 +789,27 @@ html, body {
     width: 4px; height: 40px;
   }
 }
+
+/* ─── Desktop dual-sidebar mode ─── */
+@media (min-width: 1200px) and (min-height: 500px) {
+  #drawer-left {
+    display: flex;
+    width: 320px;
+  }
+}
 </style>
 </head>
 <body>
 
 <div id="app">
+  <!-- Left Drawer (desktop dual-sidebar) -->
+  <div id="drawer-left">
+    <div id="left-panels"></div>
+  </div>
+
+  <!-- Main Area (toolbar + canvas) -->
+  <div id="main-area">
+
   <!-- Toolbar -->
   <div id="toolbar">
     <button class="tb-btn" id="btn-camera" title="Camera">
@@ -730,6 +850,8 @@ html, body {
       <span id="photo-stack-badge">0</span>
     </div>
   </div>
+
+  </div><!-- /main-area -->
 
   <!-- Drawer -->
   <div id="drawer">
@@ -822,9 +944,7 @@ html, body {
         <div class="ctrl-group">
           <div class="ctrl-group-label">Active Palette</div>
           <div id="palette-strip"></div>
-          <div class="ctrl-row">
-            <select class="ctrl-select" id="palette-select" style="flex:1"></select>
-          </div>
+          <div id="palette-buttons" class="palette-buttons"></div>
         </div>
         <div class="ctrl-group" id="custom-palette-group" style="display:none">
           <div class="ctrl-group-label">Custom Colors</div>
@@ -1044,6 +1164,22 @@ html, body {
           <div class="ctrl-row">
             <span class="ctrl-label">Mass Lock</span>
             <button class="ctrl-toggle" id="transport-masslock"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Density</span>
+            <input type="range" class="ctrl-slider" id="transport-target-density" min="-1" max="100" value="-1">
+            <span class="ctrl-value" data-for="transport-target-density">auto</span>
+            <button class="ctrl-reset" data-reset="transport-target-density" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Rep. Radius</span>
+            <input type="range" class="ctrl-slider" id="transport-repulsion-radius" min="1" max="4" value="2">
+            <span class="ctrl-value" data-for="transport-repulsion-radius">2</span>
+            <button class="ctrl-reset" data-reset="transport-repulsion-radius" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row" id="transport-count-row" style="display:none">
+            <span class="ctrl-label" style="color:var(--accent)">Particles</span>
+            <span id="transport-count-display" style="font-size:12px;color:var(--text-dim)">0 / 0</span>
           </div>
         </div>
       </div>

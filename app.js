@@ -62,6 +62,9 @@ const S = {
   transportTrails: false,
   transportTrailLen: 5,
   transportMassLock: false,
+  transportTargetDensity: -1,
+  transportRepulsionRadius: 2,
+  transportMassLockBrightOffset: 0,
 
   // Export
   exportScale: 4,
@@ -105,7 +108,8 @@ const UNDO_KEYS = [
   'redBrightness', 'greenBrightness', 'blueBrightness', 'hueShift', 'saturation',
   'outContrast', 'toneByInput', 'toneStrength', 'pixelScale', 'customWidth', 'customHeight',
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
-  'transportRepulsion', 'transportMass', 'transportMaxVel'
+  'transportRepulsion', 'transportMass', 'transportMaxVel',
+  'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius'
 ];
 
 function saveUndoState() {
@@ -198,16 +202,74 @@ function updateCustomPaletteUI() {
   container.appendChild(addBtn);
 }
 
-function populatePaletteSelect() {
-  const sel = $('palette-select');
-  sel.innerHTML = '';
-  for (const name of Object.keys(PALETTES)) {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = `${name} (${PALETTES[name].colors.length})`;
-    sel.appendChild(opt);
+// ─── Palette Buttons with Hover Preview ───
+let palettePreviewActive = null;
+
+function populatePaletteButtons() {
+  const container = $('palette-buttons');
+  container.innerHTML = '';
+  for (const [name, pal] of Object.entries(PALETTES)) {
+    const btn = document.createElement('button');
+    btn.className = 'palette-btn' + (name === S.paletteName ? ' active' : '');
+    btn.dataset.palette = name;
+
+    // Swatch strip (max 10 colors shown)
+    const swatches = document.createElement('span');
+    swatches.className = 'palette-btn-swatches';
+    const maxShow = Math.min(pal.colors.length, 10);
+    for (let i = 0; i < maxShow; i++) {
+      const sw = document.createElement('span');
+      sw.className = 'palette-btn-swatch';
+      const c = pal.colors[i];
+      sw.style.background = `rgb(${c[0]},${c[1]},${c[2]})`;
+      swatches.appendChild(sw);
+    }
+    btn.appendChild(swatches);
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'palette-btn-name';
+    nameSpan.textContent = name;
+    btn.appendChild(nameSpan);
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'palette-btn-count';
+    countSpan.textContent = pal.colors.length;
+    btn.appendChild(countSpan);
+
+    btn.addEventListener('mouseenter', () => previewPaletteHover(name));
+    btn.addEventListener('mouseleave', () => previewPaletteEnd());
+    btn.addEventListener('click', () => commitPalette(name));
+
+    container.appendChild(btn);
   }
-  sel.value = S.paletteName;
+}
+
+function previewPaletteHover(name) {
+  if (palettePreviewActive === name) return;
+  palettePreviewActive = name;
+  const pal = PALETTES[name];
+  if (!pal) return;
+  S.paletteColors = name === 'Custom' ? [...S.customColors] : [...pal.colors];
+  S.paletteKey = name + ':' + S.paletteColors.map(c => c.join(',')).join('|');
+  updatePaletteStrip();
+  S.needsRedraw = true;
+}
+
+function previewPaletteEnd() {
+  if (palettePreviewActive === null) return;
+  palettePreviewActive = null;
+  setPalette(S.paletteName);
+}
+
+function commitPalette(name) {
+  palettePreviewActive = null;
+  saveUndoState();
+  setPalette(name);
+  // Update active class on buttons
+  document.querySelectorAll('.palette-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.palette === name);
+  });
+  encodeStateToURL();
 }
 
 // ─── Compute Working Resolution ───
@@ -259,7 +321,7 @@ function sendFrameToWorker(pixels, srcW, srcH) {
     algorithm: S.algorithm,
     palette: flatPalette.buffer,
     paletteKey: S.paletteKey,
-    brightness: S.brightness,
+    brightness: S.brightness + (S.transportMassLock ? S.transportMassLockBrightOffset : 0),
     contrast: S.contrast,
     gamma: S.gamma,
     redBrightness: S.redBrightness,
@@ -476,17 +538,143 @@ function getSourcePixels() {
   return null;
 }
 
-// ─── Transport System (placeholder — simple pass-through until transport-worker.js) ───
+// ─── Transport System — Mass-Preserving Particle Physics ───
 let transportWorker = null;
 let transportParticles = null;
 let transportTargets = null;
 
+// ─── Spatial Hash Grid (ported from transport-worker.js) ───
+class SpatialHash {
+  constructor(cellSize, width, height) {
+    this.cellSize = cellSize;
+    this.cols = Math.ceil(width / cellSize);
+    this.rows = Math.ceil(height / cellSize);
+    this.cells = new Array(this.cols * this.rows);
+    this.clear();
+  }
+  clear() {
+    for (let i = 0; i < this.cells.length; i++) this.cells[i] = [];
+  }
+  insert(id, x, y) {
+    const col = Math.max(0, Math.min(this.cols - 1, (x / this.cellSize) | 0));
+    const row = Math.max(0, Math.min(this.rows - 1, (y / this.cellSize) | 0));
+    this.cells[row * this.cols + col].push(id);
+  }
+  query(x, y, radius) {
+    const results = [];
+    const minCol = Math.max(0, ((x - radius) / this.cellSize) | 0);
+    const maxCol = Math.min(this.cols - 1, ((x + radius) / this.cellSize) | 0);
+    const minRow = Math.max(0, ((y - radius) / this.cellSize) | 0);
+    const maxRow = Math.min(this.rows - 1, ((y + radius) / this.cellSize) | 0);
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const cell = this.cells[row * this.cols + col];
+        for (let i = 0; i < cell.length; i++) results.push(cell[i]);
+      }
+    }
+    return results;
+  }
+}
+
+// ─── KD-Tree (ported from transport-worker.js) ───
+class KDNode {
+  constructor(point, id, left, right, axis) {
+    this.point = point; this.id = id;
+    this.left = left; this.right = right; this.axis = axis;
+  }
+}
+
+function buildKDTree(points, ids, depth) {
+  if (ids.length === 0) return null;
+  if (ids.length === 1) {
+    const id = ids[0];
+    return new KDNode([points[id*2], points[id*2+1]], id, null, null, depth % 2);
+  }
+  const axis = depth % 2;
+  ids.sort((a, b) => points[a*2+axis] - points[b*2+axis]);
+  const mid = ids.length >> 1;
+  return new KDNode(
+    [points[ids[mid]*2], points[ids[mid]*2+1]], ids[mid],
+    buildKDTree(points, ids.slice(0, mid), depth + 1),
+    buildKDTree(points, ids.slice(mid + 1), depth + 1),
+    axis
+  );
+}
+
+function kdNearest(node, target, best, bestDist, used) {
+  if (!node) return { best, bestDist };
+  const dist = (node.point[0] - target[0]) ** 2 + (node.point[1] - target[1]) ** 2;
+  if (dist < bestDist && !used.has(node.id)) {
+    bestDist = dist; best = node.id;
+  }
+  const diff = target[node.axis] - node.point[node.axis];
+  const first = diff < 0 ? node.left : node.right;
+  const second = diff < 0 ? node.right : node.left;
+  const r1 = kdNearest(first, target, best, bestDist, used);
+  best = r1.best; bestDist = r1.bestDist;
+  if (diff * diff < bestDist) {
+    const r2 = kdNearest(second, target, best, bestDist, used);
+    best = r2.best; bestDist = r2.bestDist;
+  }
+  return { best, bestDist };
+}
+
+// ─── Target Classification ───
+// Find the lightest palette color (background). A pixel is "on" if it does NOT
+// exactly match the background color. Works because dither output is quantized
+// to exact palette RGB values.
+function getBackgroundColor() {
+  let bgR = 255, bgG = 255, bgB = 255;
+  let maxLum = -1;
+  for (const c of S.paletteColors) {
+    const lum = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+    if (lum > maxLum) { maxLum = lum; bgR = c[0]; bgG = c[1]; bgB = c[2]; }
+  }
+  return [bgR, bgG, bgB];
+}
+
+function classifyDitheredPixels(pixels, w, h) {
+  const [bgR, bgG, bgB] = getBackgroundColor();
+  const targets = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (pixels[i] !== bgR || pixels[i+1] !== bgG || pixels[i+2] !== bgB) {
+        targets.push(x, y);
+      }
+    }
+  }
+  return targets;
+}
+
+// ─── Mass-Lock Brightness Feedback (PID Controller) ───
+function applyMassLockFeedback(pixels, w, h) {
+  if (!S.transportMassLock || !transportParticles || !transportParticles.fixedCount) return;
+
+  const onPixels = classifyDitheredPixels(pixels, w, h);
+  const actual = onPixels.length / 2;
+  const desired = transportParticles.fixedCount;
+  const totalPixels = w * h;
+  const error = actual - desired;
+
+  const Kp = 50;
+  const nudge = -(error / totalPixels) * Kp;
+  // Exponential smoothing
+  S.transportMassLockBrightOffset = S.transportMassLockBrightOffset * 0.7 + nudge * 0.3;
+  // Clamp
+  S.transportMassLockBrightOffset = Math.max(-50, Math.min(50, S.transportMassLockBrightOffset));
+}
+
+// ─── Transport Rendering Entry Point ───
 function renderTransport(ditheredPixels, w, h) {
-  // For now, transport is a visual placeholder
-  // Full implementation comes with transport-worker.js
   if (!S.transportEnabled) return ditheredPixels;
 
-  // Extract "on" pixel targets (non-background pixels)
+  // Apply mass-lock feedback BEFORE transport rendering
+  applyMassLockFeedback(ditheredPixels, w, h);
+
+  // Update particle count display
+  updateTransportCountDisplay();
+
   if (!transportParticles || transportParticles.w !== w || transportParticles.h !== h) {
     initTransportParticles(ditheredPixels, w, h);
   } else {
@@ -497,19 +685,21 @@ function renderTransport(ditheredPixels, w, h) {
   return renderTransportPixels(w, h, ditheredPixels);
 }
 
-function initTransportParticles(pixels, w, h) {
-  // Find "on" pixels (darker than midpoint)
-  const targets = [];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const lum = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
-      if (lum < 128) {
-        targets.push(x, y);
-      }
-    }
-  }
+function updateTransportCountDisplay() {
+  const row = $('transport-count-row');
+  const display = $('transport-count-display');
+  if (!row || !display) return;
 
+  if (S.transportEnabled && transportParticles) {
+    row.style.display = '';
+    display.textContent = `${transportParticles.count} particles \u2192 ${transportParticles.targetCount} targets`;
+  } else {
+    row.style.display = 'none';
+  }
+}
+
+function initTransportParticles(pixels, w, h) {
+  const targets = classifyDitheredPixels(pixels, w, h);
   const count = targets.length / 2;
   const positions = new Float32Array(count * 2);
   const velocities = new Float32Array(count * 2);
@@ -541,76 +731,93 @@ function initTransportParticles(pixels, w, h) {
     count,
     targets: new Float32Array(targets),
     targetCount: count,
+    fixedCount: S.transportMassLock ? count : null,
     w, h,
     trailHistory: S.transportTrails ? [] : null
   };
 }
 
 function updateTransportTargets(pixels, w, h) {
-  const targets = [];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const lum = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
-      if (lum < 128) {
-        targets.push(x, y);
+  const targets = classifyDitheredPixels(pixels, w, h);
+  const newTargetCount = targets.length / 2;
+  const p = transportParticles;
+
+  p.targets = new Float32Array(targets);
+  p.targetCount = newTargetCount;
+
+  if (S.transportMassLock && p.fixedCount != null) {
+    // Mass lock ON: do NOT resize particle array. Count stays locked.
+    // Assignment handles count mismatch: surplus particles share targets,
+    // surplus targets go unassigned.
+  } else {
+    // Mass lock OFF: particle count floats with target count
+    const oldCount = p.count;
+    if (newTargetCount !== oldCount) {
+      const newPos = new Float32Array(newTargetCount * 2);
+      const newVel = new Float32Array(newTargetCount * 2);
+      const copyCount = Math.min(oldCount, newTargetCount);
+      for (let i = 0; i < copyCount * 2; i++) {
+        newPos[i] = p.positions[i];
+        newVel[i] = p.velocities[i];
       }
+      // New particles start at random target positions
+      for (let i = copyCount; i < newTargetCount; i++) {
+        const ti = Math.floor(Math.random() * newTargetCount);
+        newPos[i*2] = targets[ti*2];
+        newPos[i*2+1] = targets[ti*2+1];
+      }
+      p.positions = newPos;
+      p.velocities = newVel;
+      p.count = newTargetCount;
     }
   }
 
-  const newCount = targets.length / 2;
-  const oldCount = transportParticles.count;
-
-  // Resize particles if needed
-  if (newCount !== oldCount) {
-    const newPos = new Float32Array(newCount * 2);
-    const newVel = new Float32Array(newCount * 2);
-
-    const copyCount = Math.min(oldCount, newCount);
-    for (let i = 0; i < copyCount * 2; i++) {
-      newPos[i] = transportParticles.positions[i];
-      newVel[i] = transportParticles.velocities[i];
-    }
-
-    // New particles start at random target positions
-    for (let i = copyCount; i < newCount; i++) {
-      const ti = Math.floor(Math.random() * newCount);
-      newPos[i*2] = targets[ti*2];
-      newPos[i*2+1] = targets[ti*2+1];
-    }
-
-    transportParticles.positions = newPos;
-    transportParticles.velocities = newVel;
-    transportParticles.count = newCount;
-  }
-
-  transportParticles.targets = new Float32Array(targets);
-  transportParticles.targetCount = newCount;
-
-  // Greedy nearest assignment (simple version)
   assignTargets();
 }
 
 function assignTargets() {
   const p = transportParticles;
-  if (!p || p.count === 0) return;
+  if (!p || p.count === 0 || p.targetCount === 0) return;
 
   const assigned = new Float32Array(p.count * 2);
-  const used = new Uint8Array(p.targetCount);
 
   if (S.transportAssignment === 'random') {
-    // Random assignment
+    // Fisher-Yates shuffle of target indices, wrap on overflow
     const indices = Array.from({length: p.targetCount}, (_, i) => i);
     for (let i = indices.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [indices[i], indices[j]] = [indices[j], indices[i]];
     }
-    for (let i = 0; i < p.count && i < p.targetCount; i++) {
-      assigned[i*2] = p.targets[indices[i]*2];
-      assigned[i*2+1] = p.targets[indices[i]*2+1];
+    for (let i = 0; i < p.count; i++) {
+      const ti = indices[i % indices.length];
+      assigned[i*2] = p.targets[ti*2];
+      assigned[i*2+1] = p.targets[ti*2+1];
+    }
+  } else if (S.transportAssignment === 'kdtree') {
+    // KD-tree assignment
+    const ids = Array.from({length: p.targetCount}, (_, i) => i);
+    const tree = buildKDTree(p.targets, ids, 0);
+    const used = new Set();
+
+    for (let i = 0; i < p.count; i++) {
+      const target = [p.positions[i*2], p.positions[i*2+1]];
+      // When more particles than targets, allow duplicates by not excluding
+      const searchUsed = p.count <= p.targetCount ? used : new Set();
+      const { best } = kdNearest(tree, target, -1, Infinity, searchUsed);
+
+      if (best >= 0) {
+        if (p.count <= p.targetCount) used.add(best);
+        assigned[i*2] = p.targets[best*2];
+        assigned[i*2+1] = p.targets[best*2+1];
+      } else {
+        assigned[i*2] = p.positions[i*2];
+        assigned[i*2+1] = p.positions[i*2+1];
+      }
     }
   } else {
-    // Greedy nearest
+    // Greedy nearest — handles count mismatch
+    const used = new Uint8Array(p.targetCount);
+
     for (let i = 0; i < p.count; i++) {
       const px = p.positions[i*2];
       const py = p.positions[i*2+1];
@@ -618,7 +825,7 @@ function assignTargets() {
       let bestJ = 0;
 
       for (let j = 0; j < p.targetCount; j++) {
-        if (used[j]) continue;
+        if (used[j] && i < p.targetCount) continue; // only skip used if enough targets
         const dx = px - p.targets[j*2];
         const dy = py - p.targets[j*2+1];
         const dist = dx*dx + dy*dy;
@@ -628,7 +835,7 @@ function assignTargets() {
         }
       }
 
-      used[bestJ] = 1;
+      if (i < p.targetCount) used[bestJ] = 1;
       assigned[i*2] = p.targets[bestJ*2];
       assigned[i*2+1] = p.targets[bestJ*2+1];
     }
@@ -646,6 +853,8 @@ function stepTransportPhysics(w, h) {
   const damping = S.transportDamping;
   const maxVel = S.transportMaxVel;
   const mass = S.transportMass;
+  const repulsion = S.transportRepulsion;
+  const repulsionRadius = S.transportRepulsionRadius;
 
   // Save trail history
   if (S.transportTrails) {
@@ -654,66 +863,81 @@ function stepTransportPhysics(w, h) {
     if (p.trailHistory.length > S.transportTrailLen) p.trailHistory.shift();
   }
 
+  // Build spatial hash for repulsion
+  let spatialHash = null;
+  if (repulsion > 0 && repulsionRadius > 0) {
+    spatialHash = new SpatialHash(repulsionRadius * 2, w, h);
+    for (let i = 0; i < p.count; i++) {
+      spatialHash.insert(i, p.positions[i*2], p.positions[i*2+1]);
+    }
+  }
+
   for (let i = 0; i < p.count; i++) {
     const px = p.positions[i*2];
     const py = p.positions[i*2+1];
     const tx = p.assignedTargets[i*2];
     const ty = p.assignedTargets[i*2+1];
 
-    let fx = 0, fy = 0;
-
     switch (S.transportMode) {
       case 'overdamped':
-        // Smooth slide toward target
-        fx = (tx - px) * k;
-        fy = (ty - py) * k;
-        p.velocities[i*2] = fx * (1 - damping);
-        p.velocities[i*2+1] = fy * (1 - damping);
+        p.velocities[i*2] = (tx - px) * k * (1 - damping);
+        p.velocities[i*2+1] = (ty - py) * k * (1 - damping);
         break;
 
       case 'underdamped':
-        // Spring-mass with low damping
-        fx = (tx - px) * k;
-        fy = (ty - py) * k;
-        p.velocities[i*2] += (fx / mass) * dt;
-        p.velocities[i*2+1] += (fy / mass) * dt;
+        p.velocities[i*2] += ((tx - px) * k / mass) * dt;
+        p.velocities[i*2+1] += ((ty - py) * k / mass) * dt;
         p.velocities[i*2] *= (1.0 - damping * 0.3 * dt);
         p.velocities[i*2+1] *= (1.0 - damping * 0.3 * dt);
         break;
 
       case 'ballistic':
-        // Launch toward target, then decelerate
         if (Math.abs(p.velocities[i*2]) < 0.01 && Math.abs(p.velocities[i*2+1]) < 0.01) {
-          const dx = tx - px;
-          const dy = ty - py;
-          const dist = Math.sqrt(dx*dx + dy*dy);
-          if (dist > 0.5) {
-            p.velocities[i*2] = (dx / dist) * maxVel;
-            p.velocities[i*2+1] = (dy / dist) * maxVel;
+          const bdx = tx - px;
+          const bdy = ty - py;
+          const bdist = Math.sqrt(bdx*bdx + bdy*bdy);
+          if (bdist > 0.5) {
+            p.velocities[i*2] = (bdx / bdist) * maxVel;
+            p.velocities[i*2+1] = (bdy / bdist) * maxVel;
           }
         }
         p.velocities[i*2] *= (1.0 - damping * dt);
         p.velocities[i*2+1] *= (1.0 - damping * dt);
         break;
 
-      case 'diffusion':
-        // Random walk biased toward target
-        const dx = tx - px;
-        const dy = ty - py;
-        p.velocities[i*2] = dx * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
-        p.velocities[i*2+1] = dy * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
+      case 'diffusion': {
+        const ddx = tx - px;
+        const ddy = ty - py;
+        p.velocities[i*2] = ddx * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
+        p.velocities[i*2+1] = ddy * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
         break;
+      }
+    }
+
+    // Repulsion from neighbors
+    if (spatialHash && repulsion > 0) {
+      const neighbors = spatialHash.query(px, py, repulsionRadius);
+      for (let ni = 0; ni < neighbors.length; ni++) {
+        const nIdx = neighbors[ni];
+        if (nIdx === i) continue;
+        const ndx = px - p.positions[nIdx*2];
+        const ndy = py - p.positions[nIdx*2+1];
+        const ndist = Math.sqrt(ndx*ndx + ndy*ndy);
+        if (ndist > 0 && ndist < repulsionRadius) {
+          const force = repulsion / (ndist * ndist + 0.01);
+          p.velocities[i*2] += (ndx / ndist) * force * dt;
+          p.velocities[i*2+1] += (ndy / ndist) * force * dt;
+        }
+      }
     }
 
     // Clamp velocity
-    const vx = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2]));
-    const vy = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2+1]));
-    p.velocities[i*2] = vx;
-    p.velocities[i*2+1] = vy;
+    p.velocities[i*2] = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2]));
+    p.velocities[i*2+1] = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2+1]));
 
     // Update position
-    p.positions[i*2] = Math.max(0, Math.min(w - 1, px + vx * dt));
-    p.positions[i*2+1] = Math.max(0, Math.min(h - 1, py + vy * dt));
+    p.positions[i*2] = Math.max(0, Math.min(w - 1, px + p.velocities[i*2] * dt));
+    p.positions[i*2+1] = Math.max(0, Math.min(h - 1, py + p.velocities[i*2+1] * dt));
   }
 }
 
@@ -721,13 +945,7 @@ function renderTransportPixels(w, h, ditheredPixels) {
   const p = transportParticles;
   if (!p || p.count === 0) return ditheredPixels;
 
-  // Find the background color (lightest in palette)
-  let bgR = 255, bgG = 255, bgB = 255;
-  let maxLum = -1;
-  for (const c of S.paletteColors) {
-    const lum = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
-    if (lum > maxLum) { maxLum = lum; bgR = c[0]; bgG = c[1]; bgB = c[2]; }
-  }
+  const [bgR, bgG, bgB] = getBackgroundColor();
 
   // Find the foreground color (darkest in palette)
   let fgR = 0, fgG = 0, fgB = 0;
@@ -755,8 +973,9 @@ function renderTransportPixels(w, h, ditheredPixels) {
       const tr = bgR + (fgR - bgR) * alpha * 0.5;
       const tg = bgG + (fgG - bgG) * alpha * 0.5;
       const tb = bgB + (fgB - bgB) * alpha * 0.5;
+      const trailCount = Math.min(p.count, trail.length / 2);
 
-      for (let i = 0; i < p.count; i++) {
+      for (let i = 0; i < trailCount; i++) {
         const x = Math.round(trail[i*2]);
         const y = Math.round(trail[i*2+1]);
         if (x >= 0 && x < w && y >= 0 && y < h) {
@@ -973,6 +1192,7 @@ const PRESET_KEYS = [
   'outContrast', 'toneByInput', 'toneStrength', 'pixelScale', 'customWidth', 'customHeight',
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
+  'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
 ];
 
 function getStateSnapshot() {
@@ -1062,6 +1282,7 @@ const URL_KEY_MAP = {
   hu: 'hueShift', sa: 'saturation', oc: 'outContrast',
   ts: 'toneStrength', te: 'transportEnabled', tm: 'transportMode',
   cw: 'customWidth', ch: 'customHeight', dm: 'downscaleMethod',
+  ml: 'transportMassLock', td: 'transportTargetDensity', rr: 'transportRepulsionRadius',
 };
 const URL_KEY_REV = {};
 for (const [k, v] of Object.entries(URL_KEY_MAP)) URL_KEY_REV[v] = k;
@@ -1076,6 +1297,7 @@ const DEFAULTS = {
   hueShift: 0, saturation: 100, outContrast: 0,
   toneStrength: 0, transportEnabled: false, transportMode: 'overdamped',
   customWidth: 0, customHeight: 0, downscaleMethod: 'average',
+  transportMassLock: false, transportTargetDensity: -1, transportRepulsionRadius: 2,
 };
 
 function encodeStateToURL() {
@@ -1206,13 +1428,8 @@ function initUI() {
     });
   });
 
-  // Palette select
-  populatePaletteSelect();
-  $('palette-select').addEventListener('change', e => {
-    saveUndoState();
-    setPalette(e.target.value);
-    encodeStateToURL();
-  });
+  // Palette buttons
+  populatePaletteButtons();
   setPalette(S.paletteName);
 
   // Sliders
@@ -1240,6 +1457,15 @@ function initUI() {
   bindSlider('transport-mass', v => { S.transportMass = v / 100; }, v => (v / 100).toFixed(2), 100);
   bindSlider('transport-maxvel', v => { S.transportMaxVel = v; }, v => v.toString(), 5);
   bindSlider('transport-trail-len', v => { S.transportTrailLen = v; }, v => v.toString(), 5);
+  bindSlider('transport-target-density', v => {
+    S.transportTargetDensity = v;
+    // When mass lock is on with manual density, update fixed count
+    if (S.transportMassLock && transportParticles && v >= 0) {
+      const totalPixels = transportParticles.w * transportParticles.h;
+      transportParticles.fixedCount = Math.round(totalPixels * (v / 100));
+    }
+  }, v => v < 0 ? 'auto' : v + '%', -1);
+  bindSlider('transport-repulsion-radius', v => { S.transportRepulsionRadius = v; }, v => v.toString(), 2);
   bindSlider('video-duration', v => {}, v => v + 's', 3);
 
   // Toggles
@@ -1247,7 +1473,11 @@ function initUI() {
   bindToggle('tone-input-toggle', v => { S.toneByInput = v; });
   bindToggle('transport-enable', v => {
     S.transportEnabled = v;
-    if (!v) transportParticles = null;
+    if (!v) {
+      transportParticles = null;
+      S.transportMassLockBrightOffset = 0;
+      $('transport-count-row').style.display = 'none';
+    }
     S.needsRedraw = true;
   });
   bindToggle('transport-trails', v => {
@@ -1256,7 +1486,21 @@ function initUI() {
       transportParticles.trailHistory = v ? [] : null;
     }
   });
-  bindToggle('transport-masslock', v => { S.transportMassLock = v; });
+  bindToggle('transport-masslock', v => {
+    S.transportMassLock = v;
+    if (v && transportParticles) {
+      // Set fixed count from current count or from manual density
+      if (S.transportTargetDensity >= 0) {
+        const totalPixels = transportParticles.w * transportParticles.h;
+        transportParticles.fixedCount = Math.round(totalPixels * (S.transportTargetDensity / 100));
+      } else {
+        transportParticles.fixedCount = transportParticles.count;
+      }
+    } else if (!v) {
+      if (transportParticles) transportParticles.fixedCount = null;
+      S.transportMassLockBrightOffset = 0;
+    }
+  });
   bindToggle('export-transparent', v => { S.exportTransparent = v; });
 
   // Selects
@@ -1594,7 +1838,9 @@ function initUI() {
     if (key === 'b' || key === 'B') {
       saveUndoState();
       setPalette('Black & White');
-      $('palette-select').value = 'Black & White';
+      document.querySelectorAll('.palette-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.palette === 'Black & White');
+      });
       return;
     }
     if (key === 't' || key === 'T') {
@@ -1643,6 +1889,7 @@ function initUI() {
   // Window resize
   window.addEventListener('resize', () => {
     fitCanvasToViewport();
+    setupDualSidebar();
   });
 }
 
@@ -1743,7 +1990,9 @@ function syncUIFromState() {
   });
 
   // Palette
-  $('palette-select').value = S.paletteName;
+  document.querySelectorAll('.palette-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.palette === S.paletteName);
+  });
   setPalette(S.paletteName);
 
   // Transport sliders
@@ -1759,6 +2008,12 @@ function syncUIFromState() {
   updateSliderValue('transport-mass', S.transportMass.toFixed(2));
   updateSliderValue('transport-maxvel', S.transportMaxVel.toString());
   updateSliderValue('transport-trail-len', S.transportTrailLen.toString());
+
+  // New transport sliders
+  $('transport-target-density').value = S.transportTargetDensity;
+  $('transport-repulsion-radius').value = S.transportRepulsionRadius;
+  updateSliderValue('transport-target-density', S.transportTargetDensity < 0 ? 'auto' : S.transportTargetDensity + '%');
+  updateSliderValue('transport-repulsion-radius', S.transportRepulsionRadius.toString());
 
   // Transport toggles
   $('transport-enable').classList.toggle('on', S.transportEnabled);
@@ -1881,14 +2136,62 @@ function loadDefaultPattern() {
   img.src = c.toDataURL();
 }
 
-// ─── Init ───
-function init() {
-  initUI();
+// ─── Dual-Sidebar Layout (Desktop) ───
+let dualSidebarActive = false;
 
-  // Load URL state if present, otherwise load default pattern
-  if (!loadStateFromURL()) {
-    loadDefaultPattern();
+function setupDualSidebar() {
+  const wide = window.innerWidth >= 1200 && window.innerHeight >= 500;
+  if (wide === dualSidebarActive) return;
+  dualSidebarActive = wide;
+
+  const leftPanels = $('left-panels');
+  const rightPanels = $('panels');
+  const palettePanel = $('panel-palette');
+  const inputPanel = $('panel-input');
+  const palTab = document.querySelector('.tab[data-tab="palette"]');
+  const inpTab = document.querySelector('.tab[data-tab="input"]');
+
+  if (wide) {
+    // Move palette and input panels to left drawer
+    if (palettePanel.parentElement !== leftPanels) {
+      leftPanels.appendChild(palettePanel);
+      leftPanels.appendChild(inputPanel);
+    }
+    // Hide their tabs in the right drawer
+    palTab.style.display = 'none';
+    inpTab.style.display = 'none';
+
+    // If one of the moved tabs was active, switch to algo
+    if (palTab.classList.contains('active') || inpTab.classList.contains('active')) {
+      palTab.classList.remove('active');
+      inpTab.classList.remove('active');
+      palettePanel.classList.remove('active');
+      inputPanel.classList.remove('active');
+      document.querySelector('.tab[data-tab="algo"]').classList.add('active');
+      $('panel-algo').classList.add('active');
+    }
   } else {
+    // Move panels back to right drawer (after algo, before output)
+    if (palettePanel.parentElement !== rightPanels) {
+      const algoPanel = $('panel-algo');
+      algoPanel.after(palettePanel);
+      palettePanel.after(inputPanel);
+    }
+    // Restore tabs
+    palTab.style.display = '';
+    inpTab.style.display = '';
+  }
+}
+
+// ─── Init ───
+async function init() {
+  initUI();
+  loadStateFromURL();
+  setupDualSidebar();
+
+  // Try camera first, fall back to test pattern
+  await startCamera();
+  if (!S.cameraActive) {
     loadDefaultPattern();
   }
 
