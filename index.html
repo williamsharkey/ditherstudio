@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a1a1a">
+<link rel="manifest" href="manifest.json">
+<title>Dither Studio</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #1a1a1a;
+  --surface: #242424;
+  --surface2: #2e2e2e;
+  --border: #3a3a3a;
+  --text: #e0e0e0;
+  --text-dim: #888;
+  --accent: #4a9eff;
+  --accent-dim: #2a6ab8;
+  --toolbar-h: 44px;
+  --drawer-min: 44px;
+  --tab-h: 36px;
+  --control-h: 32px;
+  --touch-min: 44px;
+}
+
+html, body {
+  height: 100%; width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-user-select: none; user-select: none;
+  touch-action: manipulation;
+}
+
+/* ─── Toolbar ─── */
+#toolbar {
+  height: var(--toolbar-h);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.tb-btn {
+  height: 32px; min-width: 32px;
+  padding: 0 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex; align-items: center; gap: 4px;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+.tb-btn:hover { background: var(--border); }
+.tb-btn:active { background: var(--accent-dim); }
+.tb-btn.active { background: var(--accent-dim); border-color: var(--accent); }
+.tb-spacer { flex: 1; }
+.tb-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+#fps-display {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: right;
+}
+
+/* ─── Main Layout ─── */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+#canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  background: #111;
+  min-height: 100px;
+}
+
+#output-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #000;
+}
+
+#drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(74, 158, 255, 0.15);
+  border: 3px dashed var(--accent);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: var(--accent);
+  z-index: 100;
+  pointer-events: none;
+}
+#drop-overlay.visible { display: flex; }
+
+/* Hidden video element for camera */
+#camera-video { display: none; }
+
+/* ─── Drawer ─── */
+#drawer {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: height 0.05s ease-out;
+}
+
+#drag-handle {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  flex-shrink: 0;
+  touch-action: none;
+}
+#drag-handle::after {
+  content: '';
+  width: 40px; height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+/* ─── Tabs ─── */
+#tabs {
+  height: var(--tab-h);
+  display: flex;
+  gap: 2px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  height: var(--tab-h);
+  padding: 0 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ─── Tab Panels ─── */
+#panels {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* ─── Controls ─── */
+.ctrl-group {
+  margin-bottom: 10px;
+}
+.ctrl-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  height: var(--control-h);
+  gap: 8px;
+}
+.ctrl-row + .ctrl-row { margin-top: 2px; }
+
+.ctrl-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.ctrl-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+}
+.ctrl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.ctrl-slider::-moz-range-thumb {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.ctrl-value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  min-width: 36px;
+  text-align: right;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.ctrl-value:hover { background: var(--surface2); }
+
+.ctrl-select {
+  flex: 1;
+  height: 28px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 0 6px;
+  outline: none;
+  cursor: pointer;
+}
+.ctrl-select:focus { border-color: var(--accent); }
+
+.ctrl-toggle {
+  position: relative;
+  width: 36px; height: 20px;
+  background: var(--border);
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.ctrl-toggle.on { background: var(--accent); }
+.ctrl-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.2s;
+}
+.ctrl-toggle.on::after { transform: translateX(16px); }
+
+.ctrl-btn {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ctrl-btn:hover { background: var(--border); }
+.ctrl-btn:active { background: var(--accent-dim); }
+
+.ctrl-reset {
+  width: 20px; height: 20px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+.ctrl-reset:hover { opacity: 1; color: var(--accent); }
+
+/* ─── Palette strip ─── */
+#palette-strip {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.palette-swatch {
+  width: 18px; height: 18px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
+
+/* ─── Algorithm grid ─── */
+.algo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.algo-btn {
+  height: 30px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.algo-btn:hover { background: var(--border); }
+.algo-btn.active { background: var(--accent-dim); border-color: var(--accent); color: white; }
+
+/* ─── Resolution presets ─── */
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.preset-btn {
+  height: 26px;
+  padding: 0 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.preset-btn:hover { background: var(--border); color: var(--text); }
+
+/* ─── Custom palette editor ─── */
+.custom-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.custom-color {
+  width: 24px; height: 24px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  position: relative;
+}
+.custom-color:hover::after {
+  content: '\00d7';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.5);
+  color: white;
+  font-size: 14px;
+  border-radius: 3px;
+}
+.add-color-btn {
+  width: 24px; height: 24px;
+  border-radius: 3px;
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.add-color-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ─── Snap / Camera Button ─── */
+#snap-btn-wrap {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: none;
+}
+#snap-btn-wrap.visible { display: block; }
+
+#snap-btn {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: white;
+  border: 3px solid var(--border);
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.1s;
+}
+#snap-btn:active { transform: scale(0.92); }
+#snap-btn::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #ccc;
+}
+
+/* ─── Photo Stack ─── */
+#photo-stack {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 20;
+  display: none;
+  cursor: pointer;
+}
+#photo-stack.visible { display: block; }
+
+#photo-stack-thumb {
+  width: 44px; height: 44px;
+  border-radius: 6px;
+  border: 2px solid var(--border);
+  object-fit: cover;
+  background: var(--surface);
+}
+#photo-stack-badge {
+  position: absolute;
+  top: -6px; right: -6px;
+  min-width: 18px; height: 18px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+
+/* ─── Gallery Overlay ─── */
+#gallery-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+}
+#gallery-overlay.visible { display: flex; }
+
+#gallery-header {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+}
+#gallery-header h3 { flex: 1; font-size: 14px; font-weight: 600; }
+
+#gallery-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 4px;
+  padding: 8px;
+}
+.gallery-item {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+}
+.gallery-item:hover { border-color: var(--accent); }
+.gallery-item img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ─── Keyboard Shortcuts Overlay ─── */
+#shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+#shortcuts-overlay.visible { display: flex; }
+
+#shortcuts-panel {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+#shortcuts-panel h3 { font-size: 16px; margin-bottom: 16px; }
+
+.shortcut-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.shortcut-key {
+  font-family: monospace;
+  background: var(--surface2);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+/* ─── Scrollbar ─── */
+#panels::-webkit-scrollbar { width: 6px; }
+#panels::-webkit-scrollbar-track { background: transparent; }
+#panels::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ─── Snap Button Recording Ring ─── */
+#snap-btn.recording {
+  border-color: #ff4444;
+}
+#snap-btn.recording::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: conic-gradient(#ff4444 calc(var(--rec-progress, 0) * 360deg), transparent 0deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), black calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 4px), black calc(100% - 3px));
+}
+#snap-btn.recording::after {
+  background: #ff4444;
+  border-color: #ff4444;
+  border-radius: 4px;
+  inset: 14px;
+}
+
+/* ─── Recording Indicator ─── */
+#rec-indicator {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  color: #ff4444;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+#rec-indicator.visible { display: flex; }
+#rec-indicator::before {
+  content: '';
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #ff4444;
+  animation: rec-blink 1s infinite;
+}
+@keyframes rec-blink { 50% { opacity: 0.3; } }
+
+/* ─── Gallery Item Delete ─── */
+.gallery-item {
+  position: relative;
+}
+.gallery-delete {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  border: none;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+}
+.gallery-item:hover .gallery-delete { opacity: 1; }
+.gallery-delete:hover { background: #ff4444; }
+
+/* ─── Camera Selector ─── */
+#camera-select {
+  height: 28px;
+  max-width: 140px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 0 4px;
+  display: none;
+}
+#camera-select.visible { display: block; }
+
+/* ─── Preset List ─── */
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.preset-item {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  gap: 6px;
+}
+.preset-item:hover { background: var(--border); }
+.preset-item-name { flex: 1; }
+.preset-item-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.preset-item-delete {
+  width: 18px; height: 18px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.preset-item-delete:hover { color: #ff4444; background: rgba(255,68,68,0.15); }
+
+/* ─── Desktop side-panel mode ─── */
+@media (min-width: 900px) and (min-height: 500px) {
+  #app { flex-direction: row; }
+  #drawer {
+    width: 340px;
+    height: 100% !important;
+    border-top: none;
+    border-left: 1px solid var(--border);
+  }
+  #drag-handle {
+    cursor: ew-resize;
+  }
+  #drag-handle::after {
+    width: 4px; height: 40px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <button class="tb-btn" id="btn-camera" title="Camera">
+      <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      <span class="tb-label">Camera</span>
+    </button>
+    <select id="camera-select" title="Select camera"></select>
+    <button class="tb-btn" id="btn-upload" title="Upload image">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <span class="tb-label">Upload</span>
+    </button>
+    <button class="tb-btn" id="btn-paste" title="Paste (Ctrl+V)">
+      <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/></svg>
+      <span class="tb-label">Paste</span>
+    </button>
+    <div class="tb-spacer"></div>
+    <span id="rec-indicator">REC <span id="rec-timer">0.0s</span></span>
+    <span id="fps-display"></span>
+    <button class="tb-btn" id="btn-export" title="Export (Ctrl+S)">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span class="tb-label">Export</span>
+    </button>
+    <button class="tb-btn" id="btn-fullscreen" title="Fullscreen (F)">
+      <svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+    </button>
+  </div>
+
+  <!-- Canvas Area -->
+  <div id="canvas-area">
+    <canvas id="output-canvas"></canvas>
+    <video id="camera-video" playsinline autoplay muted></video>
+    <div id="drop-overlay">Drop image here</div>
+    <div id="snap-btn-wrap">
+      <button id="snap-btn" title="Snap photo (tap) / Record (hold)"></button>
+    </div>
+    <div id="photo-stack">
+      <img id="photo-stack-thumb" alt="">
+      <span id="photo-stack-badge">0</span>
+    </div>
+  </div>
+
+  <!-- Drawer -->
+  <div id="drawer">
+    <div id="drag-handle"></div>
+    <div id="tabs">
+      <button class="tab active" data-tab="algo">Algorithm</button>
+      <button class="tab" data-tab="palette">Palette</button>
+      <button class="tab" data-tab="input">Input</button>
+      <button class="tab" data-tab="output">Output</button>
+      <button class="tab" data-tab="resolution">Resolution</button>
+      <button class="tab" data-tab="transport">Transport</button>
+      <button class="tab" data-tab="export">Export</button>
+    </div>
+    <div id="panels">
+
+      <!-- Algorithm Panel -->
+      <div class="panel active" id="panel-algo">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Error Diffusion</div>
+          <div class="algo-grid" id="algo-error-diffusion">
+            <button class="algo-btn active" data-algo="floyd-steinberg">Floyd-Steinberg</button>
+            <button class="algo-btn" data-algo="atkinson">Atkinson</button>
+            <button class="algo-btn" data-algo="burkes">Burkes</button>
+            <button class="algo-btn" data-algo="jarvis">Jarvis-Judice-Ninke</button>
+            <button class="algo-btn" data-algo="stucki">Stucki</button>
+            <button class="algo-btn" data-algo="sierra">Sierra</button>
+            <button class="algo-btn" data-algo="sierra-two-row">Sierra Two-Row</button>
+            <button class="algo-btn" data-algo="sierra-lite">Sierra Lite</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Ordered</div>
+          <div class="algo-grid" id="algo-ordered">
+            <button class="algo-btn" data-algo="bayer2">Bayer 2x2</button>
+            <button class="algo-btn" data-algo="bayer4">Bayer 4x4</button>
+            <button class="algo-btn" data-algo="bayer8">Bayer 8x8</button>
+            <button class="algo-btn" data-algo="bayer16">Bayer 16x16</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Other</div>
+          <div class="algo-grid" id="algo-other">
+            <button class="algo-btn" data-algo="threshold">Threshold</button>
+            <button class="algo-btn" data-algo="random">Random</button>
+            <button class="algo-btn" data-algo="blue-noise">Blue Noise</button>
+            <button class="algo-btn" data-algo="halftone">Halftone</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Algorithm Settings</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Diffusion</span>
+            <input type="range" class="ctrl-slider" id="diffusion-strength" min="0" max="100" value="100">
+            <span class="ctrl-value" data-for="diffusion-strength">1.00</span>
+            <button class="ctrl-reset" data-reset="diffusion-strength" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Serpentine</span>
+            <button class="ctrl-toggle" id="serpentine-toggle"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Bayer Bias</span>
+            <input type="range" class="ctrl-slider" id="bayer-bias" min="-50" max="50" value="0">
+            <span class="ctrl-value" data-for="bayer-bias">0.00</span>
+            <button class="ctrl-reset" data-reset="bayer-bias" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Threshold</span>
+            <input type="range" class="ctrl-slider" id="threshold-level" min="0" max="255" value="128">
+            <span class="ctrl-value" data-for="threshold-level">128</span>
+            <button class="ctrl-reset" data-reset="threshold-level" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Dot Size</span>
+            <input type="range" class="ctrl-slider" id="halftone-size" min="2" max="16" value="4">
+            <span class="ctrl-value" data-for="halftone-size">4</span>
+            <button class="ctrl-reset" data-reset="halftone-size" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Dot Angle</span>
+            <input type="range" class="ctrl-slider" id="halftone-angle" min="0" max="180" value="45">
+            <span class="ctrl-value" data-for="halftone-angle">45</span>
+            <button class="ctrl-reset" data-reset="halftone-angle" title="Reset">&#8634;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Palette Panel -->
+      <div class="panel" id="panel-palette">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Active Palette</div>
+          <div id="palette-strip"></div>
+          <div class="ctrl-row">
+            <select class="ctrl-select" id="palette-select" style="flex:1"></select>
+          </div>
+        </div>
+        <div class="ctrl-group" id="custom-palette-group" style="display:none">
+          <div class="ctrl-group-label">Custom Colors</div>
+          <div class="custom-palette-row" id="custom-palette-colors"></div>
+          <input type="color" id="color-picker-input" style="display:none">
+        </div>
+      </div>
+
+      <!-- Input Panel -->
+      <div class="panel" id="panel-input">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Global Adjustments</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Brightness</span>
+            <input type="range" class="ctrl-slider" id="brightness" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="brightness">0</span>
+            <button class="ctrl-reset" data-reset="brightness" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Contrast</span>
+            <input type="range" class="ctrl-slider" id="contrast" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="contrast">0</span>
+            <button class="ctrl-reset" data-reset="contrast" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Gamma</span>
+            <input type="range" class="ctrl-slider" id="gamma" min="20" max="500" value="100">
+            <span class="ctrl-value" data-for="gamma">1.00</span>
+            <button class="ctrl-reset" data-reset="gamma" title="Reset">&#8634;</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Per-Channel Brightness</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label" style="color:#f66">Red</span>
+            <input type="range" class="ctrl-slider" id="red-brightness" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="red-brightness">0</span>
+            <button class="ctrl-reset" data-reset="red-brightness" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label" style="color:#6c6">Green</span>
+            <input type="range" class="ctrl-slider" id="green-brightness" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="green-brightness">0</span>
+            <button class="ctrl-reset" data-reset="green-brightness" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label" style="color:#68f">Blue</span>
+            <input type="range" class="ctrl-slider" id="blue-brightness" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="blue-brightness">0</span>
+            <button class="ctrl-reset" data-reset="blue-brightness" title="Reset">&#8634;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Output Panel -->
+      <div class="panel" id="panel-output">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Output Adjustments</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Hue Shift</span>
+            <input type="range" class="ctrl-slider" id="hue-shift" min="0" max="360" value="0">
+            <span class="ctrl-value" data-for="hue-shift">0</span>
+            <button class="ctrl-reset" data-reset="hue-shift" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Saturation</span>
+            <input type="range" class="ctrl-slider" id="out-saturation" min="0" max="200" value="100">
+            <span class="ctrl-value" data-for="out-saturation">100%</span>
+            <button class="ctrl-reset" data-reset="out-saturation" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Contrast</span>
+            <input type="range" class="ctrl-slider" id="out-contrast" min="-100" max="100" value="0">
+            <span class="ctrl-value" data-for="out-contrast">0</span>
+            <button class="ctrl-reset" data-reset="out-contrast" title="Reset">&#8634;</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Color Toning</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Tone by Input</span>
+            <button class="ctrl-toggle" id="tone-input-toggle"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Tone Color</span>
+            <input type="color" id="tone-color" value="#ffffff" style="width:40px;height:24px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);cursor:pointer;">
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Tone Strength</span>
+            <input type="range" class="ctrl-slider" id="tone-strength" min="0" max="100" value="0">
+            <span class="ctrl-value" data-for="tone-strength">0%</span>
+            <button class="ctrl-reset" data-reset="tone-strength" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Background</span>
+            <input type="color" id="bg-color" value="#ffffff" style="width:40px;height:24px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);cursor:pointer;">
+          </div>
+        </div>
+      </div>
+
+      <!-- Resolution Panel -->
+      <div class="panel" id="panel-resolution">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Pixel Scale</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Scale</span>
+            <input type="range" class="ctrl-slider" id="pixel-scale" min="1" max="64" value="16">
+            <span class="ctrl-value" data-for="pixel-scale">16x</span>
+            <button class="ctrl-reset" data-reset="pixel-scale" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Width</span>
+            <input type="range" class="ctrl-slider" id="custom-width" min="2" max="1920" value="0" disabled>
+            <span class="ctrl-value" data-for="custom-width">auto</span>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Height</span>
+            <input type="range" class="ctrl-slider" id="custom-height" min="2" max="1080" value="0" disabled>
+            <span class="ctrl-value" data-for="custom-height">auto</span>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Downscale</span>
+            <select class="ctrl-select" id="downscale-method">
+              <option value="average" selected>Average</option>
+              <option value="nearest">Nearest</option>
+              <option value="bilinear">Bilinear</option>
+            </select>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Presets</div>
+          <div class="preset-grid">
+            <button class="preset-btn" data-w="160" data-h="144">Game Boy</button>
+            <button class="preset-btn" data-w="256" data-h="240">NES</button>
+            <button class="preset-btn" data-w="256" data-h="192">SMS</button>
+            <button class="preset-btn" data-w="320" data-h="200">C64/CGA</button>
+            <button class="preset-btn" data-w="280" data-h="192">Apple II</button>
+            <button class="preset-btn" data-w="128" data-h="128">PICO-8</button>
+            <button class="preset-btn" data-w="512" data-h="342">Mac 128K</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transport Panel -->
+      <div class="panel" id="panel-transport">
+        <div class="ctrl-group">
+          <div class="ctrl-row">
+            <span class="ctrl-label">Enable</span>
+            <button class="ctrl-toggle" id="transport-enable"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Mode</span>
+            <select class="ctrl-select" id="transport-mode">
+              <option value="overdamped">Overdamped</option>
+              <option value="underdamped">Underdamped</option>
+              <option value="ballistic">Ballistic</option>
+              <option value="diffusion">Diffusion</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Spring (k)</span>
+            <input type="range" class="ctrl-slider" id="transport-spring" min="1" max="200" value="50">
+            <span class="ctrl-value" data-for="transport-spring">0.50</span>
+            <button class="ctrl-reset" data-reset="transport-spring" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Damping</span>
+            <input type="range" class="ctrl-slider" id="transport-damping" min="1" max="100" value="80">
+            <span class="ctrl-value" data-for="transport-damping">0.80</span>
+            <button class="ctrl-reset" data-reset="transport-damping" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Repulsion</span>
+            <input type="range" class="ctrl-slider" id="transport-repulsion" min="0" max="200" value="100">
+            <span class="ctrl-value" data-for="transport-repulsion">1.00</span>
+            <button class="ctrl-reset" data-reset="transport-repulsion" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Mass</span>
+            <input type="range" class="ctrl-slider" id="transport-mass" min="10" max="500" value="100">
+            <span class="ctrl-value" data-for="transport-mass">1.00</span>
+            <button class="ctrl-reset" data-reset="transport-mass" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Max Velocity</span>
+            <input type="range" class="ctrl-slider" id="transport-maxvel" min="1" max="20" value="5">
+            <span class="ctrl-value" data-for="transport-maxvel">5</span>
+            <button class="ctrl-reset" data-reset="transport-maxvel" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Assignment</span>
+            <select class="ctrl-select" id="transport-assignment">
+              <option value="greedy">Greedy Nearest</option>
+              <option value="kdtree">KD-Tree</option>
+              <option value="random">Random</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Init Mode</span>
+            <select class="ctrl-select" id="transport-init">
+              <option value="previous">Previous Frame</option>
+              <option value="random">Random</option>
+              <option value="center">Center Burst</option>
+              <option value="rain">Edge Rain</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Show Trails</span>
+            <button class="ctrl-toggle" id="transport-trails"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Trail Length</span>
+            <input type="range" class="ctrl-slider" id="transport-trail-len" min="1" max="20" value="5">
+            <span class="ctrl-value" data-for="transport-trail-len">5</span>
+            <button class="ctrl-reset" data-reset="transport-trail-len" title="Reset">&#8634;</button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Mass Lock</span>
+            <button class="ctrl-toggle" id="transport-masslock"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Export Panel -->
+      <div class="panel" id="panel-export">
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Image Export</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Scale</span>
+            <select class="ctrl-select" id="export-scale">
+              <option value="1">1x (Working Resolution)</option>
+              <option value="2">2x</option>
+              <option value="4" selected>4x</option>
+              <option value="8">8x</option>
+              <option value="source">Original Resolution</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Format</span>
+            <select class="ctrl-select" id="export-format">
+              <option value="png" selected>PNG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Transparent BG</span>
+            <button class="ctrl-toggle" id="export-transparent"></button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="ctrl-btn" id="btn-download" style="flex:1">Download</button>
+            <button class="ctrl-btn" id="btn-copy-clipboard" style="flex:1">Copy to Clipboard</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Video Export</div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Format</span>
+            <select class="ctrl-select" id="video-format">
+              <option value="mp4">MP4 (H.264)</option>
+              <option value="webm">WebM (VP9)</option>
+            </select>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Duration</span>
+            <input type="range" class="ctrl-slider" id="video-duration" min="1" max="12" value="3">
+            <span class="ctrl-value" data-for="video-duration">3s</span>
+          </div>
+          <div style="margin-top:6px">
+            <button class="ctrl-btn" id="btn-record-video" style="width:100%">Record Video</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Platform Presets</div>
+          <div class="preset-grid">
+            <button class="preset-btn" id="export-twitter">Twitter 1080x1080</button>
+            <button class="preset-btn" id="export-instagram">Instagram 1080x1350</button>
+            <button class="preset-btn" id="export-discord">Discord &lt;8MB</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-group-label">Presets</div>
+          <div id="preset-list" class="preset-list"></div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <button class="ctrl-btn" id="btn-save-preset" style="flex:1">Save Preset</button>
+            <button class="ctrl-btn" id="btn-import-presets" style="flex:1">Import</button>
+            <button class="ctrl-btn" id="btn-export-presets" style="flex:1">Export</button>
+          </div>
+          <input type="file" id="preset-file-input" accept=".json" style="display:none">
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts Overlay -->
+<div id="shortcuts-overlay">
+  <div id="shortcuts-panel">
+    <h3>Keyboard Shortcuts</h3>
+    <div class="shortcut-row"><span>Snap photo</span><span class="shortcut-key">Space</span></div>
+    <div class="shortcut-row"><span>Algorithms 1-8</span><span class="shortcut-key">1-8</span></div>
+    <div class="shortcut-row"><span>Pixel scale -/+</span><span class="shortcut-key">[ / ]</span></div>
+    <div class="shortcut-row"><span>B&W palette</span><span class="shortcut-key">B</span></div>
+    <div class="shortcut-row"><span>Transport toggle</span><span class="shortcut-key">T</span></div>
+    <div class="shortcut-row"><span>Fullscreen</span><span class="shortcut-key">F</span></div>
+    <div class="shortcut-row"><span>Undo</span><span class="shortcut-key">Ctrl+Z</span></div>
+    <div class="shortcut-row"><span>Redo</span><span class="shortcut-key">Ctrl+Shift+Z</span></div>
+    <div class="shortcut-row"><span>Export</span><span class="shortcut-key">Ctrl+S</span></div>
+    <div class="shortcut-row"><span>Paste image</span><span class="shortcut-key">Ctrl+V</span></div>
+    <div class="shortcut-row"><span>Copy output</span><span class="shortcut-key">Ctrl+C</span></div>
+    <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
+  </div>
+</div>
+
+<!-- Gallery Overlay -->
+<div id="gallery-overlay">
+  <div id="gallery-header">
+    <h3>Captures</h3>
+    <button class="ctrl-btn" id="gallery-export-all">Export All</button>
+    <button class="ctrl-btn" id="gallery-close">Close</button>
+  </div>
+  <div id="gallery-grid"></div>
+</div>
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none">
+
+<script src="palettes.js"></script>
+<script src="pipeline.js"></script>
+<script src="export.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

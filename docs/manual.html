@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dither Studio — Manual</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #111;
+  --surface: #1a1a1a;
+  --surface2: #222;
+  --border: #333;
+  --text: #ddd;
+  --text-dim: #888;
+  --accent: #4a9eff;
+  --accent-dim: #2a5a99;
+  --code-bg: #1e1e2e;
+  --section-gap: 64px;
+  --max-w: 760px;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 56px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Nav ─── */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(17, 17, 17, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 20px;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.nav-inner::-webkit-scrollbar { display: none; }
+
+.nav-brand {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent);
+  text-decoration: none;
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+
+.nav-link {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.nav-link:hover { color: var(--text); background: var(--surface2); }
+.nav-link.active { color: var(--accent); background: var(--accent-dim); background: rgba(74,158,255,0.12); }
+
+.nav-spacer { flex: 1; }
+.nav-cta {
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  background: var(--accent);
+  text-decoration: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.nav-cta:hover { background: #3888e8; }
+
+/* ─── Main Content ─── */
+main {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* ─── Hero ─── */
+.hero {
+  text-align: center;
+  padding: 80px 0 var(--section-gap);
+}
+.hero h1 {
+  font-size: clamp(32px, 6vw, 52px);
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+.hero h1 span { color: var(--accent); }
+.hero p {
+  font-size: 17px;
+  color: var(--text-dim);
+  max-width: 520px;
+  margin: 0 auto 28px;
+}
+.hero-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: #3888e8; }
+.btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--border); }
+
+/* ─── Sections ─── */
+section {
+  padding-bottom: var(--section-gap);
+}
+section h2 {
+  font-size: 26px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.5px;
+}
+section h2 .num {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 6px;
+}
+section > .subtitle {
+  color: var(--text-dim);
+  margin-bottom: 24px;
+  font-size: 15px;
+}
+section h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+}
+section p {
+  margin-bottom: 12px;
+}
+
+/* ─── Cards Grid ─── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.card-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.card-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ─── Tables ─── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 16px;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td { color: var(--text); }
+tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* ─── Code / Kbd ─── */
+code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+kbd {
+  display: inline-block;
+  font-family: inherit;
+  font-size: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  box-shadow: 0 1px 0 var(--border);
+  min-width: 22px;
+  text-align: center;
+}
+
+/* ─── Tag / Badge ─── */
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(74,158,255,0.12);
+  color: var(--accent);
+  margin-right: 4px;
+}
+
+/* ─── Pipeline Diagram ─── */
+.pipeline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 16px 0;
+  margin: 12px 0;
+  font-size: 13px;
+  scrollbar-width: none;
+}
+.pipeline::-webkit-scrollbar { display: none; }
+.pipe-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-align: center;
+  font-weight: 500;
+}
+.pipe-step small {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 400;
+  margin-top: 2px;
+}
+.pipe-arrow {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+/* ─── Palette Swatches ─── */
+.swatch-row {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.swatch {
+  width: 20px; height: 20px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+/* ─── Feature List ─── */
+.feature-list {
+  list-style: none;
+  margin: 12px 0;
+}
+.feature-list li {
+  padding: 6px 0 6px 24px;
+  position: relative;
+  font-size: 14px;
+}
+.feature-list li::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 12px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+/* ─── Divider ─── */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--section-gap) 0 0;
+}
+
+/* ─── Footer ─── */
+footer {
+  text-align: center;
+  padding: 40px 20px 60px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+/* ─── Responsive ─── */
+@media (max-width: 600px) {
+  .hero { padding: 48px 0 40px; }
+  .cards { grid-template-columns: 1fr; }
+  .pipeline { font-size: 12px; }
+  .pipe-step { padding: 8px 10px; }
+  section h2 { font-size: 22px; }
+  section h3 { font-size: 16px; }
+}
+
+/* ─── Scroll Spy Active State ─── */
+.nav-link[data-active] { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">Dither Studio</a>
+    <a href="#overview" class="nav-link">Overview</a>
+    <a href="#algorithms" class="nav-link">Algorithms</a>
+    <a href="#palettes" class="nav-link">Palettes</a>
+    <a href="#camera" class="nav-link">Camera</a>
+    <a href="#transport" class="nav-link">Transport</a>
+    <a href="#controls" class="nav-link">Controls</a>
+    <a href="#export" class="nav-link">Export</a>
+    <a href="#presets" class="nav-link">Presets</a>
+    <a href="#shortcuts" class="nav-link">Keys</a>
+    <div class="nav-spacer"></div>
+    <a href="../index.html" class="nav-cta">Open App</a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ─── Hero ─── -->
+<div class="hero">
+  <h1>Dither <span>Studio</span></h1>
+  <p>Realtime dithering in your browser. Camera, upload, or paste &mdash; 16 algorithms, 20+ retro palettes, particle physics, zero dependencies.</p>
+  <div class="hero-actions">
+    <a href="../index.html" class="btn btn-primary">Launch App</a>
+    <a href="https://github.com/williamsharkey/ditherstudio" class="btn btn-secondary">GitHub</a>
+  </div>
+</div>
+
+<!-- ─── 1. Overview ─── -->
+<section id="overview">
+  <h2><span class="num">01</span> Overview</h2>
+  <p class="subtitle">How the pipeline works, end to end.</p>
+
+  <div class="pipeline">
+    <div class="pipe-step">Input<small>camera / upload / paste</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Pre-process<small>brightness, contrast, gamma</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Downscale<small>pixel scale / resolution</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Dither<small>algorithm + palette</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Transport<small>particle physics (optional)</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Post-process<small>hue, saturation, toning</small></div>
+    <span class="pipe-arrow">&rarr;</span>
+    <div class="pipe-step">Output<small>pixelated canvas</small></div>
+  </div>
+
+  <p>Everything runs <strong>client-side</strong> in your browser. Dithering happens in a Web Worker so the UI stays responsive. No server, no tracking, works offline.</p>
+
+  <h3>Getting an Image In</h3>
+  <ul class="feature-list">
+    <li><strong>Camera</strong> &mdash; tap the Camera button for live 30fps dithered preview</li>
+    <li><strong>Upload</strong> &mdash; click Upload or drag-and-drop any image onto the app</li>
+    <li><strong>Paste</strong> &mdash; press <kbd>Ctrl</kbd>+<kbd>V</kbd> or click Paste to load from clipboard</li>
+    <li><strong>Test pattern</strong> &mdash; a gradient test image loads automatically on first visit</li>
+  </ul>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 2. Algorithms ─── -->
+<section id="algorithms">
+  <h2><span class="num">02</span> Algorithms</h2>
+  <p class="subtitle">16 dithering algorithms, each with its own visual character.</p>
+
+  <h3>Error Diffusion</h3>
+  <p>These algorithms scan the image pixel-by-pixel, quantize each pixel to the nearest palette color, then spread the quantization error to neighboring pixels.</p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-title">Floyd-Steinberg</div>
+      <div class="card-desc">The classic. Balanced 2&times;3 kernel diffusing to 4 neighbors. Good all-rounder.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Atkinson</div>
+      <div class="card-desc">Mac classic look. Only diffuses 3/4 of the error &mdash; gives higher contrast, distinctive style.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Burkes</div>
+      <div class="card-desc">Smoother gradients than Floyd-Steinberg. 2&times;5 kernel, 7 neighbors.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Jarvis-Judice-Ninke</div>
+      <div class="card-desc">Large 3&times;5 kernel, 12 neighbors. Smoothest error diffusion but slowest.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Stucki</div>
+      <div class="card-desc">Similar to JJN with slightly different weights. Very smooth results.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Sierra (3 variants)</div>
+      <div class="card-desc">Full Sierra, Two-Row, and Lite. Ranging from smooth to fast, good balance of quality.</div>
+    </div>
+  </div>
+
+  <h3>Ordered Dither (Bayer)</h3>
+  <p>Uses a threshold matrix tiled across the image. Each pixel is compared against its matrix position to decide on/off. No error diffusion &mdash; very fast, distinctive crosshatch pattern.</p>
+
+  <table>
+    <tr><th>Variant</th><th>Matrix</th><th>Character</th></tr>
+    <tr><td>Bayer 2&times;2</td><td>4 levels</td><td>Coarse, chunky</td></tr>
+    <tr><td>Bayer 4&times;4</td><td>16 levels</td><td>Classic retro</td></tr>
+    <tr><td>Bayer 8&times;8</td><td>64 levels</td><td>Smooth gradients</td></tr>
+    <tr><td>Bayer 16&times;16</td><td>256 levels</td><td>Very smooth</td></tr>
+  </table>
+
+  <h3>Other Methods</h3>
+  <table>
+    <tr><th>Algorithm</th><th>How It Works</th></tr>
+    <tr><td>Threshold</td><td>Simple binary cut at adjustable level. No dithering &mdash; just on or off.</td></tr>
+    <tr><td>Random Noise</td><td>Random threshold per pixel. Grainy, film-like.</td></tr>
+    <tr><td>Blue Noise</td><td>Pre-computed 64&times;64 blue noise matrix. Organic, even distribution without visible patterns.</td></tr>
+    <tr><td>Halftone</td><td>Circular dot pattern with adjustable size and angle. Newspaper / print look.</td></tr>
+  </table>
+
+  <h3>Per-Algorithm Settings</h3>
+  <table>
+    <tr><th>Setting</th><th>Range</th><th>Effect</th></tr>
+    <tr><td>Diffusion Strength</td><td>0.0 &ndash; 1.0</td><td>How much error gets spread. 0 = threshold, 1 = full diffusion.</td></tr>
+    <tr><td>Serpentine</td><td>on / off</td><td>Alternates scan direction per row. Reduces directional banding.</td></tr>
+    <tr><td>Bayer Bias</td><td>-0.5 &ndash; +0.5</td><td>Shifts the threshold matrix up or down. Controls overall brightness of ordered dither.</td></tr>
+    <tr><td>Threshold Level</td><td>0 &ndash; 255</td><td>Cut point for simple threshold mode.</td></tr>
+    <tr><td>Dot Size</td><td>2 &ndash; 16</td><td>Halftone dot radius.</td></tr>
+    <tr><td>Dot Angle</td><td>0&deg; &ndash; 180&deg;</td><td>Halftone grid rotation.</td></tr>
+  </table>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 3. Palettes ─── -->
+<section id="palettes">
+  <h2><span class="num">03</span> Palettes</h2>
+  <p class="subtitle">20+ built-in palettes from classic hardware, plus custom palette support.</p>
+
+  <table>
+    <tr><th>Palette</th><th>Colors</th><th>Origin</th></tr>
+    <tr><td>Black &amp; White</td><td>2</td><td>Pure monochrome</td></tr>
+    <tr><td>Grayscale 4 / 8 / 16</td><td>4, 8, 16</td><td>Evenly spaced grays</td></tr>
+    <tr><td>Game Boy (DMG)</td><td>4</td><td>Original Game Boy green tints</td></tr>
+    <tr><td>Game Boy Pocket</td><td>4</td><td>Gray-scale variant</td></tr>
+    <tr><td>NES</td><td>54</td><td>2C02 PPU palette</td></tr>
+    <tr><td>SEGA Master System</td><td>64</td><td>6-bit RGB</td></tr>
+    <tr><td>CGA Mode 4 (4 modes)</td><td>4</td><td>IBM PC CGA card</td></tr>
+    <tr><td>EGA</td><td>16</td><td>IBM Enhanced Graphics</td></tr>
+    <tr><td>Commodore 64</td><td>16</td><td>VIC-II chip</td></tr>
+    <tr><td>Apple II</td><td>16</td><td>Apple II hi-res</td></tr>
+    <tr><td>ZX Spectrum</td><td>15</td><td>Sinclair ZX Spectrum</td></tr>
+    <tr><td>Teletext</td><td>8</td><td>3-bit RGB broadcast</td></tr>
+    <tr><td>PICO-8</td><td>16</td><td>Fantasy console</td></tr>
+    <tr><td>Sweetie 16</td><td>16</td><td>Pixel art palette by GrafxKid</td></tr>
+    <tr><td>Endesga 32</td><td>32</td><td>Rich pixel art palette</td></tr>
+    <tr><td>Custom</td><td>any</td><td>Pick your own colors</td></tr>
+  </table>
+
+  <h3>Custom Palettes</h3>
+  <p>Select "Custom" from the palette dropdown. Click <code>+</code> to add colors with a picker, click any swatch to remove it (minimum 2 colors). The dither algorithm will use only your chosen colors.</p>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 4. Camera & Capture ─── -->
+<section id="camera">
+  <h2><span class="num">04</span> Camera &amp; Capture</h2>
+  <p class="subtitle">Live dithering from your device camera, photo snaps, and video recording.</p>
+
+  <h3>Live Preview</h3>
+  <p>Tap <strong>Camera</strong> in the toolbar to start your camera. The feed runs through the full dithering pipeline at ~30fps. Change any setting &mdash; algorithm, palette, brightness &mdash; and see it update instantly.</p>
+  <p>If your device has multiple cameras, a dropdown selector appears in the toolbar to switch between them.</p>
+
+  <h3>Snap Photos</h3>
+  <p>Tap the round <strong>snap button</strong> (or press <kbd>Space</kbd>) to capture the current dithered output. A thumbnail slides to the bottom-left corner onto a photo stack &mdash; no dialogs, no interruption.</p>
+
+  <h3>Record Video Loops</h3>
+  <p><strong>Long-press</strong> the snap button (hold for 500ms) to start recording. A red ring fills around the button showing progress. Release to stop, or it auto-stops at the configured duration (1&ndash;12 seconds).</p>
+  <p>The video records from the dithered output canvas at the current export scale, and auto-downloads as MP4 or WebM.</p>
+
+  <h3>Photo Gallery</h3>
+  <p>Tap the photo stack in the bottom-left to open the gallery. From here you can:</p>
+  <ul class="feature-list">
+    <li>Tap a capture to re-load it as the source image</li>
+    <li>Delete captures with the &times; button</li>
+    <li>Export All to download every capture as PNG</li>
+  </ul>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 5. Transport ─── -->
+<section id="transport">
+  <h2><span class="num">05</span> Particle Transport</h2>
+  <p class="subtitle">Experimental mass-preserving particle physics mode.</p>
+
+  <p>When transport is enabled, the dithered "on" pixels become <strong>physical particles</strong> with position and velocity. Instead of instantly showing the dithered result, particles must flow to their target positions. The total count of active particles is conserved.</p>
+
+  <h3>Physics Modes</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-title">Overdamped</div>
+      <div class="card-desc">Smooth slide to targets. No oscillation. Like iron filings pulled by a magnet.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Underdamped</div>
+      <div class="card-desc">Spring-mass with low damping. Particles overshoot and bounce before settling. Jelly-like.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Ballistic</div>
+      <div class="card-desc">Particles launched toward targets then decelerate. Explosive scatter-then-settle.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Diffusion</div>
+      <div class="card-desc">Random walk biased toward target. Organic, Brownian motion. Cloud-like convergence.</div>
+    </div>
+  </div>
+
+  <h3>Transport Controls</h3>
+  <table>
+    <tr><th>Control</th><th>Range</th><th>Effect</th></tr>
+    <tr><td>Spring (k)</td><td>0.01 &ndash; 2.0</td><td>How strongly particles are pulled toward targets</td></tr>
+    <tr><td>Damping</td><td>0.01 &ndash; 1.0</td><td>Velocity friction. Higher = faster settling.</td></tr>
+    <tr><td>Repulsion</td><td>0.0 &ndash; 2.0</td><td>Short-range push between nearby particles</td></tr>
+    <tr><td>Mass</td><td>0.1 &ndash; 5.0</td><td>Particle inertia. Heavier = slower response.</td></tr>
+    <tr><td>Max Velocity</td><td>1 &ndash; 20 px/frame</td><td>Speed cap to prevent particles flying off</td></tr>
+    <tr><td>Show Trails</td><td>on / off</td><td>Render fading trail behind each particle</td></tr>
+    <tr><td>Trail Length</td><td>1 &ndash; 20 frames</td><td>How long the trail persists</td></tr>
+    <tr><td>Mass Lock</td><td>on / off</td><td>Auto-adjust brightness to maintain exact particle count</td></tr>
+  </table>
+
+  <h3>Assignment Methods</h3>
+  <table>
+    <tr><th>Method</th><th>Speed</th><th>Quality</th></tr>
+    <tr><td>Greedy Nearest</td><td>Fast</td><td>Each particle claims its nearest available target. Good enough for most use cases.</td></tr>
+    <tr><td>KD-Tree</td><td>Fast</td><td>Spatial tree for better nearest-neighbor lookup at scale.</td></tr>
+    <tr><td>Random</td><td>Instant</td><td>Random assignment creates maximum visual chaos during transport.</td></tr>
+  </table>
+
+  <h3>Initialization Modes</h3>
+  <p>When transport activates, particles need starting positions:</p>
+  <ul class="feature-list">
+    <li><strong>Previous Frame</strong> &mdash; particles carry over from last frame (best for camera/video)</li>
+    <li><strong>Random</strong> &mdash; scattered randomly, then flow to targets</li>
+    <li><strong>Center Burst</strong> &mdash; all start at center, explode outward</li>
+    <li><strong>Edge Rain</strong> &mdash; particles enter from top and fall to targets</li>
+  </ul>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 6. Controls ─── -->
+<section id="controls">
+  <h2><span class="num">06</span> Controls</h2>
+  <p class="subtitle">Pre-processing and post-processing adjustments.</p>
+
+  <h3>Input (Pre-Processing)</h3>
+  <p>Applied to the source image <em>before</em> dithering:</p>
+  <table>
+    <tr><th>Control</th><th>Range</th><th>Default</th></tr>
+    <tr><td>Brightness</td><td>-100 &ndash; +100</td><td>0</td></tr>
+    <tr><td>Contrast</td><td>-100 &ndash; +100</td><td>0</td></tr>
+    <tr><td>Gamma</td><td>0.2 &ndash; 5.0</td><td>1.0</td></tr>
+    <tr><td>Red Brightness</td><td>-100 &ndash; +100</td><td>0</td></tr>
+    <tr><td>Green Brightness</td><td>-100 &ndash; +100</td><td>0</td></tr>
+    <tr><td>Blue Brightness</td><td>-100 &ndash; +100</td><td>0</td></tr>
+  </table>
+
+  <h3>Output (Post-Processing)</h3>
+  <p>Applied <em>after</em> dithering, before final render:</p>
+  <table>
+    <tr><th>Control</th><th>Range</th><th>Effect</th></tr>
+    <tr><td>Hue Shift</td><td>0&deg; &ndash; 360&deg;</td><td>Rotates all output colors around the hue wheel</td></tr>
+    <tr><td>Saturation</td><td>0% &ndash; 200%</td><td>Color intensity of output</td></tr>
+    <tr><td>Output Contrast</td><td>-100 &ndash; +100</td><td>Additional contrast on final image</td></tr>
+    <tr><td>Tone by Input</td><td>on / off</td><td>Colorize dithered pixels using the original image's color at each position</td></tr>
+    <tr><td>Tone Color</td><td>color picker</td><td>Tint all "on" pixels with this color</td></tr>
+    <tr><td>Tone Strength</td><td>0% &ndash; 100%</td><td>Blend between palette color and tone color</td></tr>
+    <tr><td>Background</td><td>color picker</td><td>Override the "off" pixel color</td></tr>
+  </table>
+
+  <h3>Resolution</h3>
+  <p><strong>Pixel Scale</strong> (1&times;&ndash;64&times;) controls how many input pixels map to one dithered pixel. At 16&times;, a 640&times;480 input becomes 40&times;30 working resolution &mdash; big chunky pixels.</p>
+  <p>Or pick an exact resolution from the presets: Game Boy 160&times;144, NES 256&times;240, PICO-8 128&times;128, etc.</p>
+  <p>Output always renders with <code>image-rendering: pixelated</code> &mdash; hard pixel edges, no blurring.</p>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 7. Export ─── -->
+<section id="export">
+  <h2><span class="num">07</span> Export</h2>
+  <p class="subtitle">Download, copy, record, share.</p>
+
+  <h3>Image Export</h3>
+  <table>
+    <tr><th>Option</th><th>Details</th></tr>
+    <tr><td>Format</td><td>PNG (lossless) or WebP (smaller)</td></tr>
+    <tr><td>Scale</td><td>1&times; (working res), 2&times;, 4&times;, 8&times;, or original resolution</td></tr>
+    <tr><td>Transparent BG</td><td>Replace background color with alpha (PNG only)</td></tr>
+    <tr><td>Copy to Clipboard</td><td>Paste directly into any app</td></tr>
+  </table>
+  <p>All upscaling uses <strong>nearest-neighbor</strong> &mdash; pixels stay sharp at any size.</p>
+
+  <h3>Video Export</h3>
+  <p>Record the canvas output for 1&ndash;12 seconds as MP4 (H.264) or WebM (VP9). Use the <strong>Record Video</strong> button in the export panel, or long-press the snap button during camera mode.</p>
+
+  <h3>Platform Presets</h3>
+  <table>
+    <tr><th>Platform</th><th>Format</th><th>Resolution</th></tr>
+    <tr><td>Twitter / X</td><td>PNG or MP4</td><td>1080&times;1080</td></tr>
+    <tr><td>Instagram</td><td>PNG or MP4</td><td>1080&times;1350</td></tr>
+    <tr><td>Discord</td><td>PNG</td><td>4&times; upscale, &lt;8MB</td></tr>
+  </table>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 8. Presets ─── -->
+<section id="presets">
+  <h2><span class="num">08</span> Presets &amp; Sharing</h2>
+  <p class="subtitle">Save your look, share it with a link.</p>
+
+  <h3>Built-in Presets</h3>
+  <table>
+    <tr><th>Name</th><th>Algorithm</th><th>Palette</th><th>Vibe</th></tr>
+    <tr><td>Classic Mac</td><td>Atkinson</td><td>B&amp;W</td><td>Original Macintosh look, 16&times; scale</td></tr>
+    <tr><td>Game Boy Photo</td><td>Atkinson</td><td>Game Boy DMG</td><td>Game Boy Camera feel</td></tr>
+    <tr><td>1-Bit Noir</td><td>Floyd-Steinberg</td><td>B&amp;W</td><td>High contrast, moody</td></tr>
+    <tr><td>Newspaper</td><td>Halftone</td><td>B&amp;W</td><td>Dot screen print look</td></tr>
+    <tr><td>Matrix</td><td>Floyd-Steinberg</td><td>B&amp;W + green tone</td><td>Green-on-black terminal</td></tr>
+    <tr><td>Thermal Camera</td><td>Bayer 8&times;8</td><td>Sweetie 16</td><td>Heat map aesthetic</td></tr>
+    <tr><td>CRT Retro</td><td>Sierra</td><td>EGA</td><td>Old CRT monitor feel</td></tr>
+  </table>
+
+  <h3>User Presets</h3>
+  <p>Click <strong>Save Preset</strong> to store your current settings with a name. Presets are saved in your browser's localStorage and persist across sessions. You can also export all your presets as a JSON file and import them on another device.</p>
+
+  <h3>URL Sharing</h3>
+  <p>Every setting is automatically encoded in the URL hash. Copy the URL and share it &mdash; anyone who opens it gets the exact same algorithm, palette, brightness, contrast, etc.</p>
+  <p>Example: <code>...#a=atkinson&amp;p=PICO-8&amp;s=8&amp;b=-10&amp;c=20</code></p>
+  <p>The source image is not included in the URL &mdash; just the settings.</p>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 9. Keyboard Shortcuts ─── -->
+<section id="shortcuts">
+  <h2><span class="num">09</span> Keyboard Shortcuts</h2>
+  <p class="subtitle">Fast access on desktop. Press <kbd>?</kbd> in the app to see these.</p>
+
+  <table>
+    <tr><th>Key</th><th>Action</th></tr>
+    <tr><td><kbd>Space</kbd></td><td>Snap photo (hold to record video)</td></tr>
+    <tr><td><kbd>1</kbd> &ndash; <kbd>8</kbd></td><td>Switch algorithm</td></tr>
+    <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Decrease / increase pixel scale</td></tr>
+    <tr><td><kbd>B</kbd></td><td>Black &amp; White palette</td></tr>
+    <tr><td><kbd>T</kbd></td><td>Toggle transport system</td></tr>
+    <tr><td><kbd>F</kbd></td><td>Fullscreen</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Redo</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Export image</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Paste image from clipboard</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Copy output to clipboard</td></tr>
+    <tr><td><kbd>?</kbd></td><td>Show shortcuts overlay</td></tr>
+  </table>
+</section>
+
+<hr class="divider">
+
+<!-- ─── 10. Technical ─── -->
+<section id="technical">
+  <h2><span class="num">10</span> Technical Details</h2>
+  <p class="subtitle">For the curious.</p>
+
+  <ul class="feature-list">
+    <li><strong>Zero dependencies</strong> &mdash; vanilla HTML + CSS + JS, no framework, no build step</li>
+    <li><strong>Web Worker dithering</strong> &mdash; all 16 algorithms run off the main thread</li>
+    <li><strong>Transferable ArrayBuffers</strong> &mdash; zero-copy frame passing between threads</li>
+    <li><strong>32&times;32&times;32 RGB LUT</strong> &mdash; nearest palette color lookup is O(1) per pixel</li>
+    <li><strong>Spatial hash grid</strong> &mdash; O(1) neighbor queries for transport particle collisions</li>
+    <li><strong>PWA</strong> &mdash; works offline after first load via service worker</li>
+    <li><strong>~200KB total</strong> &mdash; all code, no external assets</li>
+  </ul>
+
+  <h3>Browser Support</h3>
+  <p>Chrome, Edge, Firefox, Safari &mdash; desktop and mobile. Camera features require HTTPS or localhost. MediaRecorder for video export may fall back to WebM on some browsers.</p>
+</section>
+
+</main>
+
+<footer>
+  Built by <a href="https://github.com/williamsharkey">@williamsharkey</a> &middot;
+  <a href="https://github.com/williamsharkey/ditherstudio">Source on GitHub</a> &middot;
+  MIT License
+</footer>
+
+<!-- Scroll spy for nav highlighting -->
+<script>
+{
+  const links = document.querySelectorAll('.nav-link[href^="#"]');
+  const sections = [];
+  links.forEach(link => {
+    const id = link.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if (el) sections.push({ el, link });
+  });
+
+  let ticking = false;
+  function updateActive() {
+    const y = window.scrollY + 80;
+    let current = sections[0];
+    for (const s of sections) {
+      if (s.el.offsetTop <= y) current = s;
+    }
+    links.forEach(l => l.classList.remove('active'));
+    if (current) current.link.classList.add('active');
+    ticking = false;
+  }
+
+  window.addEventListener('scroll', () => {
+    if (!ticking) { requestAnimationFrame(updateActive); ticking = true; }
+  }, { passive: true });
+  updateActive();
+}
+</script>
+
+</body>
+</html>
