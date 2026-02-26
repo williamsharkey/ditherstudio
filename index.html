@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="manifest" href="manifest.json?v=2">
+<link rel="manifest" href="manifest.json?v=3">
 <title>Dither Studio</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -861,7 +861,6 @@ html, body {
       <button class="tab" data-tab="palette">Palette</button>
       <button class="tab" data-tab="input">Input</button>
       <button class="tab" data-tab="output">Output</button>
-      <button class="tab" data-tab="resolution">Resolution</button>
       <button class="tab" data-tab="transport">Transport</button>
       <button class="tab" data-tab="export">Export</button>
     </div>
@@ -1043,12 +1042,8 @@ html, body {
             <input type="color" id="bg-color" value="#ffffff" style="width:40px;height:24px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);cursor:pointer;">
           </div>
         </div>
-      </div>
-
-      <!-- Resolution Panel -->
-      <div class="panel" id="panel-resolution">
         <div class="ctrl-group">
-          <div class="ctrl-group-label">Pixel Scale</div>
+          <div class="ctrl-group-label">Resolution</div>
           <div class="ctrl-row">
             <span class="ctrl-label">Scale</span>
             <input type="range" class="ctrl-slider" id="pixel-scale" min="1" max="64" value="16">
@@ -1073,10 +1068,7 @@ html, body {
               <option value="bilinear">Bilinear</option>
             </select>
           </div>
-        </div>
-        <div class="ctrl-group">
-          <div class="ctrl-group-label">Presets</div>
-          <div class="preset-grid">
+          <div class="preset-grid" style="margin-top:6px">
             <button class="preset-btn" data-w="160" data-h="144">Game Boy</button>
             <button class="preset-btn" data-w="256" data-h="240">NES</button>
             <button class="preset-btn" data-w="256" data-h="192">SMS</button>
@@ -1288,10 +1280,10 @@ html, body {
 <!-- Hidden file input -->
 <input type="file" id="file-input" accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none">
 
-<script src="palettes.js?v=2"></script>
-<script src="pipeline.js?v=2"></script>
-<script src="export.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<script src="palettes.js?v=3"></script>
+<script src="pipeline.js?v=3"></script>
+<script src="export.js?v=3"></script>
+<script src="app.js?v=3"></script>
 <script>
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
