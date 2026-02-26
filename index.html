@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="manifest" href="manifest.json?v=3">
+<link rel="manifest" href="manifest.json?v=5">
 <title>Dither Studio</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -43,22 +43,22 @@ html, body {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 8px;
-  gap: 4px;
+  padding: 0 4px;
+  gap: 2px;
   flex-shrink: 0;
   z-index: 10;
 }
 
 .tb-btn {
-  height: 32px; min-width: 32px;
-  padding: 0 10px;
+  height: 30px; min-width: 30px;
+  padding: 0 6px;
   background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 5px;
   color: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
-  display: flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 3px;
   white-space: nowrap;
   transition: background 0.1s;
 }
@@ -66,13 +66,15 @@ html, body {
 .tb-btn:active { background: var(--accent-dim); }
 .tb-btn.active { background: var(--accent-dim); border-color: var(--accent); }
 .tb-spacer { flex: 1; }
-.tb-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tb-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tb-label { display: none; }
+@media (min-width: 480px) { .tb-label { display: inline; } }
 
 #fps-display {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  min-width: 48px;
+  min-width: 40px;
   text-align: right;
 }
 
@@ -665,14 +667,14 @@ html, body {
 
 /* ─── Camera Selector ─── */
 #camera-select {
-  height: 28px;
-  max-width: 140px;
+  height: 26px;
+  max-width: 80px;
   background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-size: 11px;
-  padding: 0 4px;
+  padding: 0 2px;
   display: none;
 }
 #camera-select.visible { display: block; }
@@ -1046,8 +1048,8 @@ html, body {
           <div class="ctrl-group-label">Resolution</div>
           <div class="ctrl-row">
             <span class="ctrl-label">Scale</span>
-            <input type="range" class="ctrl-slider" id="pixel-scale" min="1" max="64" value="16">
-            <span class="ctrl-value" data-for="pixel-scale">16x</span>
+            <input type="range" class="ctrl-slider" id="pixel-scale" min="1" max="64" value="7">
+            <span class="ctrl-value" data-for="pixel-scale">7x</span>
             <button class="ctrl-reset" data-reset="pixel-scale" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
@@ -1098,20 +1100,20 @@ html, body {
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Spring (k)</span>
-            <input type="range" class="ctrl-slider" id="transport-spring" min="1" max="200" value="50">
-            <span class="ctrl-value" data-for="transport-spring">0.50</span>
+            <input type="range" class="ctrl-slider" id="transport-spring" min="1" max="200" value="32">
+            <span class="ctrl-value" data-for="transport-spring">0.32</span>
             <button class="ctrl-reset" data-reset="transport-spring" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Damping</span>
-            <input type="range" class="ctrl-slider" id="transport-damping" min="1" max="100" value="80">
-            <span class="ctrl-value" data-for="transport-damping">0.80</span>
+            <input type="range" class="ctrl-slider" id="transport-damping" min="1" max="100" value="75">
+            <span class="ctrl-value" data-for="transport-damping">0.75</span>
             <button class="ctrl-reset" data-reset="transport-damping" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Repulsion</span>
-            <input type="range" class="ctrl-slider" id="transport-repulsion" min="0" max="200" value="100">
-            <span class="ctrl-value" data-for="transport-repulsion">1.00</span>
+            <input type="range" class="ctrl-slider" id="transport-repulsion" min="0" max="200" value="0">
+            <span class="ctrl-value" data-for="transport-repulsion">0.00</span>
             <button class="ctrl-reset" data-reset="transport-repulsion" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
@@ -1155,12 +1157,12 @@ html, body {
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Mass Lock</span>
-            <button class="ctrl-toggle" id="transport-masslock"></button>
+            <button class="ctrl-toggle on" id="transport-masslock"></button>
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Density</span>
-            <input type="range" class="ctrl-slider" id="transport-target-density" min="-1" max="100" value="-1">
-            <span class="ctrl-value" data-for="transport-target-density">auto</span>
+            <input type="range" class="ctrl-slider" id="transport-target-density" min="-1" max="100" value="72">
+            <span class="ctrl-value" data-for="transport-target-density">72%</span>
             <button class="ctrl-reset" data-reset="transport-target-density" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
@@ -1280,13 +1282,15 @@ html, body {
 <!-- Hidden file input -->
 <input type="file" id="file-input" accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none">
 
-<script src="palettes.js?v=3"></script>
-<script src="pipeline.js?v=3"></script>
-<script src="export.js?v=3"></script>
-<script src="app.js?v=3"></script>
+<script src="palettes.js?v=5"></script>
+<script src="pipeline.js?v=5"></script>
+<script src="export.js?v=5"></script>
+<script src="app.js?v=5"></script>
 <script>
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.register('sw.js?v=5', { updateViaCache: 'none' })
+    .then(reg => { reg.update(); })
+    .catch(() => {});
 }
 </script>
 </body>

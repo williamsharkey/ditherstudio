@@ -104,8 +104,11 @@ function kdNearest(node, target, best, bestDist, used) {
 }
 
 // ─── Assignment Methods ───
+// All return { assigned: Float32Array(count*2), mapping: Int32Array(count) }
+// mapping[i] = target index assigned to particle i (for color lookup)
 function assignGreedy(positions, targets, count, targetCount) {
   const assigned = new Float32Array(count * 2);
+  const mapping = new Int32Array(count);
   const used = new Uint8Array(targetCount);
 
   for (let i = 0; i < count; i++) {
@@ -115,7 +118,7 @@ function assignGreedy(positions, targets, count, targetCount) {
     let bestJ = 0;
 
     for (let j = 0; j < targetCount; j++) {
-      if (used[j]) continue;
+      if (used[j] && i < targetCount) continue;
       const dx = px - targets[j*2];
       const dy = py - targets[j*2+1];
       const dist = dx*dx + dy*dy;
@@ -125,40 +128,45 @@ function assignGreedy(positions, targets, count, targetCount) {
       }
     }
 
-    if (bestJ < targetCount) used[bestJ] = 1;
+    if (i < targetCount) used[bestJ] = 1;
     assigned[i*2] = targets[bestJ*2];
     assigned[i*2+1] = targets[bestJ*2+1];
+    mapping[i] = bestJ;
   }
 
-  return assigned;
+  return { assigned, mapping };
 }
 
 function assignKDTree(positions, targets, count, targetCount) {
   const assigned = new Float32Array(count * 2);
+  const mapping = new Int32Array(count);
   const ids = Array.from({length: targetCount}, (_, i) => i);
   const tree = buildKDTree(targets, ids, 0);
   const used = new Set();
 
   for (let i = 0; i < count; i++) {
     const target = [positions[i*2], positions[i*2+1]];
-    const { best } = kdNearest(tree, target, -1, Infinity, used);
+    const searchUsed = count <= targetCount ? used : new Set();
+    const { best } = kdNearest(tree, target, -1, Infinity, searchUsed);
 
     if (best >= 0) {
-      used.add(best);
+      if (count <= targetCount) used.add(best);
       assigned[i*2] = targets[best*2];
       assigned[i*2+1] = targets[best*2+1];
+      mapping[i] = best;
     } else {
-      // Fallback
       assigned[i*2] = positions[i*2];
       assigned[i*2+1] = positions[i*2+1];
+      mapping[i] = 0;
     }
   }
 
-  return assigned;
+  return { assigned, mapping };
 }
 
 function assignRandom(targets, count, targetCount) {
   const assigned = new Float32Array(count * 2);
+  const mapping = new Int32Array(count);
   const indices = Array.from({length: targetCount}, (_, i) => i);
 
   // Fisher-Yates shuffle
@@ -167,12 +175,14 @@ function assignRandom(targets, count, targetCount) {
     [indices[i], indices[j]] = [indices[j], indices[i]];
   }
 
-  for (let i = 0; i < count && i < targetCount; i++) {
-    assigned[i*2] = targets[indices[i]*2];
-    assigned[i*2+1] = targets[indices[i]*2+1];
+  for (let i = 0; i < count; i++) {
+    const ti = indices[i % indices.length];
+    assigned[i*2] = targets[ti*2];
+    assigned[i*2+1] = targets[ti*2+1];
+    mapping[i] = ti;
   }
 
-  return assigned;
+  return { assigned, mapping };
 }
 
 // ─── Physics Step ───
@@ -278,23 +288,36 @@ self.onmessage = function(e) {
     const targets = new Float32Array(msg.targets);
     const count = msg.count;
     const targetCount = msg.targetCount;
+    const targetColors = msg.targetColors ? new Uint8Array(msg.targetColors) : null;
 
-    // Assign targets
-    let assigned;
+    // Assign targets (returns { assigned, mapping })
+    let result;
     switch (msg.assignment) {
       case 'kdtree':
-        assigned = assignKDTree(positions, targets, count, targetCount);
+        result = assignKDTree(positions, targets, count, targetCount);
         break;
       case 'random':
-        assigned = assignRandom(targets, count, targetCount);
+        result = assignRandom(targets, count, targetCount);
         break;
       default:
-        assigned = assignGreedy(positions, targets, count, targetCount);
+        result = assignGreedy(positions, targets, count, targetCount);
+    }
+
+    // Build per-particle colors from assignment mapping
+    let colors = null;
+    if (targetColors) {
+      colors = new Uint8Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const ti = result.mapping[i];
+        colors[i*3]     = targetColors[ti*3];
+        colors[i*3 + 1] = targetColors[ti*3 + 1];
+        colors[i*3 + 2] = targetColors[ti*3 + 2];
+      }
     }
 
     // Physics step
     physicsStep({
-      positions, velocities, assignedTargets: assigned, count,
+      positions, velocities, assignedTargets: result.assigned, count,
       mode: msg.mode,
       spring: msg.spring,
       damping: msg.damping,
@@ -307,11 +330,17 @@ self.onmessage = function(e) {
     });
 
     // Transfer back
-    self.postMessage({
+    const transferList = [positions.buffer, velocities.buffer];
+    const response = {
       type: 'stepResult',
       positions: positions.buffer,
       velocities: velocities.buffer,
       frameId: msg.frameId
-    }, [positions.buffer, velocities.buffer]);
+    };
+    if (colors) {
+      response.colors = colors.buffer;
+      transferList.push(colors.buffer);
+    }
+    self.postMessage(response, transferList);
   }
 };

@@ -140,9 +140,28 @@ function nearestColorDirect(palette, nColors, r, g, b) {
   return [br, bg, bb];
 }
 
+// ─── Buffer Pools ───
+// Reuse allocations across frames to reduce GC pressure
+const _rLut = new Uint8ClampedArray(256);
+const _gLut = new Uint8ClampedArray(256);
+const _bLut = new Uint8ClampedArray(256);
+
+let _downBuf = null, _downBufSize = 0;
+function getPooledBuffer(size) {
+  if (_downBufSize < size) { _downBuf = new Uint8ClampedArray(size); _downBufSize = size; }
+  return _downBuf;
+}
+
+let _errBuf = null, _errBufSize = 0;
+function getErrorBuffer(size) {
+  if (_errBufSize < size) { _errBuf = new Float32Array(size); _errBufSize = size; }
+  return _errBuf;
+}
+
 // ─── Downscale (area average) ───
 function downscaleAverage(src, srcW, srcH, dstW, dstH) {
-  const dst = new Uint8ClampedArray(dstW * dstH * 4);
+  const needed = dstW * dstH * 4;
+  const dst = getPooledBuffer(needed);
   const scaleX = srcW / dstW;
   const scaleY = srcH / dstH;
 
@@ -182,7 +201,7 @@ function downscaleAverage(src, srcW, srcH, dstW, dstH) {
 }
 
 function downscaleNearest(src, srcW, srcH, dstW, dstH) {
-  const dst = new Uint8ClampedArray(dstW * dstH * 4);
+  const dst = getPooledBuffer(dstW * dstH * 4);
   const scaleX = srcW / dstW;
   const scaleY = srcH / dstH;
   for (let dy = 0; dy < dstH; dy++) {
@@ -198,7 +217,7 @@ function downscaleNearest(src, srcW, srcH, dstW, dstH) {
 }
 
 function downscaleBilinear(src, srcW, srcH, dstW, dstH) {
-  const dst = new Uint8ClampedArray(dstW * dstH * 4);
+  const dst = getPooledBuffer(dstW * dstH * 4);
   const scaleX = srcW / dstW;
   const scaleY = srcH / dstH;
   for (let dy = 0; dy < dstH; dy++) {
@@ -244,13 +263,13 @@ function preprocess(pixels, w, h, params) {
   if (brightness === 0 && contrast === 0 && gamma === 1.0 &&
       rBri === 0 && gBri === 0 && bBri === 0) return;
 
-  // Build LUT for speed
+  // Build LUT for speed (reuse pooled buffers)
   const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
   const gammaInv = 1.0 / gamma;
 
-  const lutR = new Uint8ClampedArray(256);
-  const lutG = new Uint8ClampedArray(256);
-  const lutB = new Uint8ClampedArray(256);
+  const lutR = _rLut;
+  const lutG = _gLut;
+  const lutB = _bLut;
 
   for (let i = 0; i < 256; i++) {
     let r = i + brightness + rBri;
@@ -328,8 +347,9 @@ const KERNELS = {
 // ─── Error Diffusion Dithering ───
 function ditherErrorDiffusion(pixels, w, h, lut, palette, nColors, kernel, strength, serpentine) {
   const offsets = kernel.offsets;
-  // Work in float for error accumulation
-  const buf = new Float32Array(w * h * 3);
+  // Work in float for error accumulation (pooled buffer)
+  const bufSize = w * h * 3;
+  const buf = getErrorBuffer(bufSize);
   for (let i = 0, j = 0; i < w * h * 4; i += 4, j += 3) {
     buf[j] = pixels[i];
     buf[j + 1] = pixels[i + 1];

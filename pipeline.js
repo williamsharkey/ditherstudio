@@ -46,6 +46,37 @@ const Pipeline = {
     const result = new Uint8ClampedArray(dithered.length);
     const contrastFactor = contrast !== 0 ? (259 * (contrast + 255)) / (255 * (259 - contrast)) : 1;
 
+    // Precompute combined hue rotation + saturation matrix (3x3)
+    const needsColorMatrix = hueShift !== 0 || saturation !== 1.0;
+    let m0, m1, m2, m3, m4, m5, m6, m7, m8;
+    if (needsColorMatrix) {
+      // Hue rotation via Rodrigues formula around (1,1,1)/sqrt(3)
+      const a = hueShift * Math.PI / 180;
+      const cosA = Math.cos(a), sinA = Math.sin(a);
+      const c1 = (1 - cosA) / 3;
+      const s1 = sinA * Math.sqrt(1/3);
+
+      // Hue rotation matrix
+      let h0 = cosA + c1, h1 = c1 - s1, h2 = c1 + s1;
+      let h3 = c1 + s1, h4 = cosA + c1, h5 = c1 - s1;
+      let h6 = c1 - s1, h7 = c1 + s1, h8 = cosA + c1;
+
+      if (saturation !== 1.0) {
+        // Saturation: blend between identity luminance (desaturated) and color
+        // Desat matrix: each row = [0.299, 0.587, 0.114] (luminance weights)
+        const s = saturation;
+        const sr = 0.299, sg = 0.587, sb = 0.114;
+        // Composite: sat * hue_matrix + (1-s) * luminance_matrix
+        m0 = s * h0 + (1-s) * sr; m1 = s * h1 + (1-s) * sg; m2 = s * h2 + (1-s) * sb;
+        m3 = s * h3 + (1-s) * sr; m4 = s * h4 + (1-s) * sg; m5 = s * h5 + (1-s) * sb;
+        m6 = s * h6 + (1-s) * sr; m7 = s * h7 + (1-s) * sg; m8 = s * h8 + (1-s) * sb;
+      } else {
+        m0 = h0; m1 = h1; m2 = h2;
+        m3 = h3; m4 = h4; m5 = h5;
+        m6 = h6; m7 = h7; m8 = h8;
+      }
+    }
+
     for (let i = 0; i < w * h * 4; i += 4) {
       let r = dithered[i], g = dithered[i+1], b = dithered[i+2];
 
@@ -57,26 +88,23 @@ const Pipeline = {
       // Color toning
       if (toneStrength > 0) {
         if (toneByInput && inputPixels) {
-          // Tone by input image color
           const ir = inputPixels[i], ig = inputPixels[i+1], ib = inputPixels[i+2];
           r = r + (ir - r) * toneStrength;
           g = g + (ig - g) * toneStrength;
           b = b + (ib - b) * toneStrength;
         } else {
-          // Tone by single color
           r = r + (toneColor[0] - r) * toneStrength;
           g = g + (toneColor[1] - g) * toneStrength;
           b = b + (toneColor[2] - b) * toneStrength;
         }
       }
 
-      // Hue shift and saturation (convert to HSL, modify, convert back)
-      if (hueShift !== 0 || saturation !== 1.0) {
-        let [h, s, l] = rgbToHsl(r, g, b);
-        h = (h + hueShift / 360) % 1;
-        if (h < 0) h += 1;
-        s = Math.min(1, s * saturation);
-        [r, g, b] = hslToRgb(h, s, l);
+      // Hue shift and saturation via rotation matrix (replaces HSL round-trip)
+      if (needsColorMatrix) {
+        const nr = m0*r + m1*g + m2*b;
+        const ng = m3*r + m4*g + m5*b;
+        const nb = m6*r + m7*g + m8*b;
+        r = nr; g = ng; b = nb;
       }
 
       // Output contrast

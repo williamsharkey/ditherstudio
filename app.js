@@ -44,7 +44,7 @@ const S = {
   bgColor: null,
 
   // Resolution
-  pixelScale: 16,
+  pixelScale: 7,
   customWidth: 0,
   customHeight: 0,
   downscaleMethod: 'average',
@@ -52,17 +52,17 @@ const S = {
   // Transport
   transportEnabled: false,
   transportMode: 'overdamped',
-  transportSpring: 0.5,
-  transportDamping: 0.8,
-  transportRepulsion: 1.0,
+  transportSpring: 0.32,
+  transportDamping: 0.75,
+  transportRepulsion: 0,
   transportMass: 1.0,
   transportMaxVel: 5,
   transportAssignment: 'greedy',
   transportInit: 'previous',
   transportTrails: false,
   transportTrailLen: 5,
-  transportMassLock: false,
-  transportTargetDensity: -1,
+  transportMassLock: true,
+  transportTargetDensity: 72,
   transportRepulsionRadius: 2,
   transportMassLockBrightOffset: 0,
 
@@ -96,7 +96,7 @@ const ctx = canvas.getContext('2d', { willReadFrequently: false });
 const video = $('camera-video');
 
 // ─── Worker ───
-const ditherWorker = new Worker('dither-worker.js');
+const ditherWorker = new Worker('dither-worker.js?v=5');
 
 // ─── Undo/Redo ───
 const undoStack = [];
@@ -293,6 +293,9 @@ function getWorkingSize() {
 }
 
 // ─── Send Frame to Worker ───
+let _cachedPaletteFlat = null;
+let _cachedPaletteKey = null;
+
 function sendFrameToWorker(pixels, srcW, srcH) {
   if (S.workerBusy) return;
 
@@ -302,24 +305,28 @@ function sendFrameToWorker(pixels, srcW, srcH) {
   S.workerBusy = true;
   S.frameId++;
 
-  // Flatten palette to Uint8Array
-  const flatPalette = new Uint8Array(S.paletteColors.length * 3);
-  for (let i = 0; i < S.paletteColors.length; i++) {
-    flatPalette[i*3] = S.paletteColors[i][0];
-    flatPalette[i*3+1] = S.paletteColors[i][1];
-    flatPalette[i*3+2] = S.paletteColors[i][2];
+  // Cache flat palette — only rebuild when palette changes
+  if (S.paletteKey !== _cachedPaletteKey) {
+    _cachedPaletteFlat = new Uint8Array(S.paletteColors.length * 3);
+    for (let i = 0; i < S.paletteColors.length; i++) {
+      _cachedPaletteFlat[i*3] = S.paletteColors[i][0];
+      _cachedPaletteFlat[i*3+1] = S.paletteColors[i][1];
+      _cachedPaletteFlat[i*3+2] = S.paletteColors[i][2];
+    }
+    _cachedPaletteKey = S.paletteKey;
   }
+  // Copy cached palette (gets transferred)
+  const palBuf = new Uint8Array(_cachedPaletteFlat);
 
-  // Always copy — getImageData returns a buffer tied to the canvas
-  const pixelsCopy = new Uint8ClampedArray(pixels);
-  const buffer = pixelsCopy.buffer;
+  // getImageData/captureFrame returns a fresh buffer each call — transfer directly
+  const buffer = pixels.buffer;
 
   ditherWorker.postMessage({
     type: 'dither',
     pixels: buffer,
     srcW, srcH, dstW, dstH,
     algorithm: S.algorithm,
-    palette: flatPalette.buffer,
+    palette: palBuf.buffer,
     paletteKey: S.paletteKey,
     brightness: S.brightness + (S.transportMassLock ? S.transportMassLockBrightOffset : 0),
     contrast: S.contrast,
@@ -376,8 +383,8 @@ function renderResult() {
   });
 
   // Set canvas to working resolution (CSS scales it up with pixelated rendering)
-  canvas.width = w;
-  canvas.height = h;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
   ctx.putImageData(new ImageData(output, w, h), 0, 0);
 
   // Store final output for export
@@ -452,6 +459,29 @@ async function startCamera(deviceId) {
   }
 }
 
+function simplifyCameraLabel(label, index) {
+  if (!label) return index === 0 ? 'Front' : 'Back';
+  // Normalize: strip "camera" (redundant), clean up iOS verbosity
+  let s = label
+    .replace(/\s*camera\s*/gi, ' ')
+    .replace(/\s*\(.*?\)\s*/g, '')  // strip parenthesized info
+    .trim();
+  // Detect front/back from common keywords
+  const lower = s.toLowerCase();
+  if (/front|facetime|user|selfie/i.test(lower)) {
+    return 'Front';
+  }
+  if (/back|rear|environment/i.test(lower)) {
+    // Keep distinguishing info like "Ultra Wide", "Telephoto"
+    const qualifier = s
+      .replace(/back|rear|environment/gi, '')
+      .replace(/triple|dual|wide/gi, m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase())
+      .trim();
+    return qualifier && qualifier.toLowerCase() !== 'back' ? 'Back ' + qualifier : 'Back';
+  }
+  return s || (index === 0 ? 'Front' : 'Back');
+}
+
 async function enumerateCameras() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
@@ -460,10 +490,10 @@ async function enumerateCameras() {
     if (cameras.length <= 1) { sel.classList.remove('visible'); return; }
 
     sel.innerHTML = '';
-    cameras.forEach(cam => {
+    cameras.forEach((cam, i) => {
       const opt = document.createElement('option');
       opt.value = cam.deviceId;
-      opt.textContent = cam.label || `Camera ${sel.options.length + 1}`;
+      opt.textContent = simplifyCameraLabel(cam.label, i);
       sel.appendChild(opt);
     });
 
@@ -539,44 +569,86 @@ function getSourcePixels() {
 }
 
 // ─── Transport System — Mass-Preserving Particle Physics ───
-let transportWorker = null;
+const transportWorker = new Worker('transport-worker.js?v=5');
 let transportParticles = null;
-let transportTargets = null;
+let transportWorkerBusy = false;
 
-// ─── Spatial Hash Grid (ported from transport-worker.js) ───
-class SpatialHash {
-  constructor(cellSize, width, height) {
-    this.cellSize = cellSize;
-    this.cols = Math.ceil(width / cellSize);
-    this.rows = Math.ceil(height / cellSize);
-    this.cells = new Array(this.cols * this.rows);
-    this.clear();
-  }
-  clear() {
-    for (let i = 0; i < this.cells.length; i++) this.cells[i] = [];
-  }
-  insert(id, x, y) {
-    const col = Math.max(0, Math.min(this.cols - 1, (x / this.cellSize) | 0));
-    const row = Math.max(0, Math.min(this.rows - 1, (y / this.cellSize) | 0));
-    this.cells[row * this.cols + col].push(id);
-  }
-  query(x, y, radius) {
-    const results = [];
-    const minCol = Math.max(0, ((x - radius) / this.cellSize) | 0);
-    const maxCol = Math.min(this.cols - 1, ((x + radius) / this.cellSize) | 0);
-    const minRow = Math.max(0, ((y - radius) / this.cellSize) | 0);
-    const maxRow = Math.min(this.rows - 1, ((y + radius) / this.cellSize) | 0);
-    for (let row = minRow; row <= maxRow; row++) {
-      for (let col = minCol; col <= maxCol; col++) {
-        const cell = this.cells[row * this.cols + col];
-        for (let i = 0; i < cell.length; i++) results.push(cell[i]);
-      }
-    }
-    return results;
-  }
+function resetTransportParticles() {
+  transportParticles = null;
+  transportWorkerBusy = false;
 }
 
-// ─── KD-Tree (ported from transport-worker.js) ───
+// Handle transport worker responses
+transportWorker.onmessage = function(e) {
+  const msg = e.data;
+  if (msg.type === 'stepResult') {
+    transportWorkerBusy = false;
+    if (transportParticles) {
+      transportParticles.positions = new Float32Array(msg.positions);
+      transportParticles.velocities = new Float32Array(msg.velocities);
+      if (msg.colors) {
+        transportParticles.colors = new Uint8Array(msg.colors);
+      }
+      S.needsRedraw = true;
+    }
+  }
+};
+
+function sendTransportStep() {
+  if (transportWorkerBusy || !transportParticles) return;
+  const p = transportParticles;
+  if (p.count === 0 || p.targetCount === 0) return;
+
+  transportWorkerBusy = true;
+
+  // Save trail history before sending (trails rendered on main thread)
+  if (S.transportTrails) {
+    if (!p.trailHistory) p.trailHistory = [];
+    if (!p.trailColors) p.trailColors = [];
+    p.trailHistory.push(new Float32Array(p.positions));
+    if (p.colors) p.trailColors.push(new Uint8Array(p.colors));
+    if (p.trailHistory.length > S.transportTrailLen) p.trailHistory.shift();
+    if (p.trailColors.length > S.transportTrailLen) p.trailColors.shift();
+  }
+
+  // Copy positions/velocities (we keep originals for rendering)
+  const posBuf = new Float32Array(p.positions);
+  const velBuf = new Float32Array(p.velocities);
+  const targetsBuf = new Float32Array(p.targets);
+
+  const msg = {
+    type: 'step',
+    positions: posBuf.buffer,
+    velocities: velBuf.buffer,
+    targets: targetsBuf.buffer,
+    count: p.count,
+    targetCount: p.targetCount,
+    assignment: S.transportAssignment,
+    mode: S.transportMode,
+    spring: S.transportSpring,
+    damping: S.transportDamping,
+    repulsion: S.transportRepulsion,
+    repulsionRadius: S.transportRepulsionRadius,
+    mass: S.transportMass,
+    maxVel: S.transportMaxVel,
+    width: p.w,
+    height: p.h,
+    frameId: S.frameId
+  };
+
+  const transferList = [posBuf.buffer, velBuf.buffer, targetsBuf.buffer];
+
+  // Send target colors for per-particle color assignment
+  if (p.targetColors) {
+    const tcBuf = new Uint8Array(p.targetColors);
+    msg.targetColors = tcBuf.buffer;
+    transferList.push(tcBuf.buffer);
+  }
+
+  transportWorker.postMessage(msg, transferList);
+}
+
+// ─── KD-Tree (used only for main-thread assignment in assignTargets) ───
 class KDNode {
   constructor(point, id, left, right, axis) {
     this.point = point; this.id = id;
@@ -633,18 +705,38 @@ function getBackgroundColor() {
   return [bgR, bgG, bgB];
 }
 
+// Pooled buffers for classifyDitheredPixels
+let _targetBuf = null, _targetBufCap = 0;
+let _targetColorBuf = null, _targetColorBufCap = 0;
+
 function classifyDitheredPixels(pixels, w, h) {
   const [bgR, bgG, bgB] = getBackgroundColor();
-  const targets = [];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      if (pixels[i] !== bgR || pixels[i+1] !== bgG || pixels[i+2] !== bgB) {
-        targets.push(x, y);
-      }
+  const maxTargets = w * h;
+
+  // Pool position buffer
+  if (_targetBufCap < maxTargets * 2) {
+    _targetBuf = new Float32Array(maxTargets * 2);
+    _targetBufCap = maxTargets * 2;
+  }
+  // Pool color buffer
+  if (_targetColorBufCap < maxTargets * 3) {
+    _targetColorBuf = new Uint8Array(maxTargets * 3);
+    _targetColorBufCap = maxTargets * 3;
+  }
+
+  let count = 0;
+  for (let i = 0; i < w * h; i++) {
+    const idx = i * 4;
+    if (pixels[idx] !== bgR || pixels[idx+1] !== bgG || pixels[idx+2] !== bgB) {
+      _targetBuf[count * 2] = i % w;
+      _targetBuf[count * 2 + 1] = (i / w) | 0;
+      _targetColorBuf[count * 3] = pixels[idx];
+      _targetColorBuf[count * 3 + 1] = pixels[idx + 1];
+      _targetColorBuf[count * 3 + 2] = pixels[idx + 2];
+      count++;
     }
   }
-  return targets;
+  return { buffer: _targetBuf, colors: _targetColorBuf, count };
 }
 
 // ─── Mass-Lock Brightness Feedback (PID Controller) ───
@@ -652,7 +744,7 @@ function applyMassLockFeedback(pixels, w, h) {
   if (!S.transportMassLock || !transportParticles || !transportParticles.fixedCount) return;
 
   const onPixels = classifyDitheredPixels(pixels, w, h);
-  const actual = onPixels.length / 2;
+  const actual = onPixels.count;
   const desired = transportParticles.fixedCount;
   const totalPixels = w * h;
   const error = actual - desired;
@@ -679,8 +771,10 @@ function renderTransport(ditheredPixels, w, h) {
     initTransportParticles(ditheredPixels, w, h);
   } else {
     updateTransportTargets(ditheredPixels, w, h);
-    stepTransportPhysics(w, h);
   }
+
+  // Kick off async physics step in worker (non-blocking)
+  sendTransportStep();
 
   return renderTransportPixels(w, h, ditheredPixels);
 }
@@ -699,8 +793,8 @@ function updateTransportCountDisplay() {
 }
 
 function initTransportParticles(pixels, w, h) {
-  const targets = classifyDitheredPixels(pixels, w, h);
-  const count = targets.length / 2;
+  const classified = classifyDitheredPixels(pixels, w, h);
+  const count = classified.count;
   const positions = new Float32Array(count * 2);
   const velocities = new Float32Array(count * 2);
 
@@ -720,29 +814,48 @@ function initTransportParticles(pixels, w, h) {
         positions[i*2+1] = 0;
         break;
       default: // 'previous' or 'dither'
-        positions[i*2] = targets[i*2];
-        positions[i*2+1] = targets[i*2+1];
+        positions[i*2] = classified.buffer[i*2];
+        positions[i*2+1] = classified.buffer[i*2+1];
     }
   }
+
+  // Copy target positions and colors from pooled buffers
+  const targets = new Float32Array(count * 2);
+  targets.set(classified.buffer.subarray(0, count * 2));
+  const targetColors = new Uint8Array(count * 3);
+  targetColors.set(classified.colors.subarray(0, count * 3));
+
+  // Initialize per-particle colors from target colors
+  const colors = new Uint8Array(count * 3);
+  colors.set(targetColors);
 
   transportParticles = {
     positions,
     velocities,
     count,
-    targets: new Float32Array(targets),
+    targets,
+    targetColors,
     targetCount: count,
-    fixedCount: S.transportMassLock ? count : null,
+    colors,
+    fixedCount: S.transportMassLock
+      ? (S.transportTargetDensity >= 0 ? Math.round(w * h * (S.transportTargetDensity / 100)) : count)
+      : null,
     w, h,
-    trailHistory: S.transportTrails ? [] : null
+    trailHistory: S.transportTrails ? [] : null,
+    trailColors: S.transportTrails ? [] : null
   };
 }
 
 function updateTransportTargets(pixels, w, h) {
-  const targets = classifyDitheredPixels(pixels, w, h);
-  const newTargetCount = targets.length / 2;
+  const classified = classifyDitheredPixels(pixels, w, h);
+  const newTargetCount = classified.count;
   const p = transportParticles;
 
-  p.targets = new Float32Array(targets);
+  // Copy from pooled buffers
+  p.targets = new Float32Array(newTargetCount * 2);
+  p.targets.set(classified.buffer.subarray(0, newTargetCount * 2));
+  p.targetColors = new Uint8Array(newTargetCount * 3);
+  p.targetColors.set(classified.colors.subarray(0, newTargetCount * 3));
   p.targetCount = newTargetCount;
 
   if (S.transportMassLock && p.fixedCount != null) {
@@ -760,14 +873,20 @@ function updateTransportTargets(pixels, w, h) {
         newPos[i] = p.positions[i];
         newVel[i] = p.velocities[i];
       }
-      // New particles start at random target positions
+      // Preserve colors for kept particles, assign random target colors for new ones
+      const newColors = new Uint8Array(newTargetCount * 3);
+      for (let i = 0; i < copyCount * 3; i++) newColors[i] = p.colors[i];
       for (let i = copyCount; i < newTargetCount; i++) {
         const ti = Math.floor(Math.random() * newTargetCount);
-        newPos[i*2] = targets[ti*2];
-        newPos[i*2+1] = targets[ti*2+1];
+        newPos[i*2] = p.targets[ti*2];
+        newPos[i*2+1] = p.targets[ti*2+1];
+        newColors[i*3] = p.targetColors[ti*3];
+        newColors[i*3+1] = p.targetColors[ti*3+1];
+        newColors[i*3+2] = p.targetColors[ti*3+2];
       }
       p.positions = newPos;
       p.velocities = newVel;
+      p.colors = newColors;
       p.count = newTargetCount;
     }
   }
@@ -781,6 +900,15 @@ function assignTargets() {
 
   const assigned = new Float32Array(p.count * 2);
 
+  // Helper to copy color from target j to particle i
+  const copyColor = (i, j) => {
+    if (p.targetColors && p.colors) {
+      p.colors[i*3]     = p.targetColors[j*3];
+      p.colors[i*3 + 1] = p.targetColors[j*3 + 1];
+      p.colors[i*3 + 2] = p.targetColors[j*3 + 2];
+    }
+  };
+
   if (S.transportAssignment === 'random') {
     // Fisher-Yates shuffle of target indices, wrap on overflow
     const indices = Array.from({length: p.targetCount}, (_, i) => i);
@@ -792,6 +920,7 @@ function assignTargets() {
       const ti = indices[i % indices.length];
       assigned[i*2] = p.targets[ti*2];
       assigned[i*2+1] = p.targets[ti*2+1];
+      copyColor(i, ti);
     }
   } else if (S.transportAssignment === 'kdtree') {
     // KD-tree assignment
@@ -809,6 +938,7 @@ function assignTargets() {
         if (p.count <= p.targetCount) used.add(best);
         assigned[i*2] = p.targets[best*2];
         assigned[i*2+1] = p.targets[best*2+1];
+        copyColor(i, best);
       } else {
         assigned[i*2] = p.positions[i*2];
         assigned[i*2+1] = p.positions[i*2+1];
@@ -838,108 +968,18 @@ function assignTargets() {
       if (i < p.targetCount) used[bestJ] = 1;
       assigned[i*2] = p.targets[bestJ*2];
       assigned[i*2+1] = p.targets[bestJ*2+1];
+      copyColor(i, bestJ);
     }
   }
 
   p.assignedTargets = assigned;
 }
 
-function stepTransportPhysics(w, h) {
-  const p = transportParticles;
-  if (!p || p.count === 0 || !p.assignedTargets) return;
+// stepTransportPhysics is now handled by transport-worker.js
+// Main thread only renders from transportParticles state
 
-  const dt = 1.0;
-  const k = S.transportSpring;
-  const damping = S.transportDamping;
-  const maxVel = S.transportMaxVel;
-  const mass = S.transportMass;
-  const repulsion = S.transportRepulsion;
-  const repulsionRadius = S.transportRepulsionRadius;
-
-  // Save trail history
-  if (S.transportTrails) {
-    if (!p.trailHistory) p.trailHistory = [];
-    p.trailHistory.push(new Float32Array(p.positions));
-    if (p.trailHistory.length > S.transportTrailLen) p.trailHistory.shift();
-  }
-
-  // Build spatial hash for repulsion
-  let spatialHash = null;
-  if (repulsion > 0 && repulsionRadius > 0) {
-    spatialHash = new SpatialHash(repulsionRadius * 2, w, h);
-    for (let i = 0; i < p.count; i++) {
-      spatialHash.insert(i, p.positions[i*2], p.positions[i*2+1]);
-    }
-  }
-
-  for (let i = 0; i < p.count; i++) {
-    const px = p.positions[i*2];
-    const py = p.positions[i*2+1];
-    const tx = p.assignedTargets[i*2];
-    const ty = p.assignedTargets[i*2+1];
-
-    switch (S.transportMode) {
-      case 'overdamped':
-        p.velocities[i*2] = (tx - px) * k * (1 - damping);
-        p.velocities[i*2+1] = (ty - py) * k * (1 - damping);
-        break;
-
-      case 'underdamped':
-        p.velocities[i*2] += ((tx - px) * k / mass) * dt;
-        p.velocities[i*2+1] += ((ty - py) * k / mass) * dt;
-        p.velocities[i*2] *= (1.0 - damping * 0.3 * dt);
-        p.velocities[i*2+1] *= (1.0 - damping * 0.3 * dt);
-        break;
-
-      case 'ballistic':
-        if (Math.abs(p.velocities[i*2]) < 0.01 && Math.abs(p.velocities[i*2+1]) < 0.01) {
-          const bdx = tx - px;
-          const bdy = ty - py;
-          const bdist = Math.sqrt(bdx*bdx + bdy*bdy);
-          if (bdist > 0.5) {
-            p.velocities[i*2] = (bdx / bdist) * maxVel;
-            p.velocities[i*2+1] = (bdy / bdist) * maxVel;
-          }
-        }
-        p.velocities[i*2] *= (1.0 - damping * dt);
-        p.velocities[i*2+1] *= (1.0 - damping * dt);
-        break;
-
-      case 'diffusion': {
-        const ddx = tx - px;
-        const ddy = ty - py;
-        p.velocities[i*2] = ddx * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
-        p.velocities[i*2+1] = ddy * k * 0.1 + (Math.random() - 0.5) * maxVel * 0.5;
-        break;
-      }
-    }
-
-    // Repulsion from neighbors
-    if (spatialHash && repulsion > 0) {
-      const neighbors = spatialHash.query(px, py, repulsionRadius);
-      for (let ni = 0; ni < neighbors.length; ni++) {
-        const nIdx = neighbors[ni];
-        if (nIdx === i) continue;
-        const ndx = px - p.positions[nIdx*2];
-        const ndy = py - p.positions[nIdx*2+1];
-        const ndist = Math.sqrt(ndx*ndx + ndy*ndy);
-        if (ndist > 0 && ndist < repulsionRadius) {
-          const force = repulsion / (ndist * ndist + 0.01);
-          p.velocities[i*2] += (ndx / ndist) * force * dt;
-          p.velocities[i*2+1] += (ndy / ndist) * force * dt;
-        }
-      }
-    }
-
-    // Clamp velocity
-    p.velocities[i*2] = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2]));
-    p.velocities[i*2+1] = Math.max(-maxVel, Math.min(maxVel, p.velocities[i*2+1]));
-
-    // Update position
-    p.positions[i*2] = Math.max(0, Math.min(w - 1, px + p.velocities[i*2] * dt));
-    p.positions[i*2+1] = Math.max(0, Math.min(h - 1, py + p.velocities[i*2+1] * dt));
-  }
-}
+// Pooled buffer for transport rendering
+let _transportPixelBuf = null, _transportPixelBufSize = 0;
 
 function renderTransportPixels(w, h, ditheredPixels) {
   const p = transportParticles;
@@ -947,15 +987,13 @@ function renderTransportPixels(w, h, ditheredPixels) {
 
   const [bgR, bgG, bgB] = getBackgroundColor();
 
-  // Find the foreground color (darkest in palette)
-  let fgR = 0, fgG = 0, fgB = 0;
-  let minLum = Infinity;
-  for (const c of S.paletteColors) {
-    const lum = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
-    if (lum < minLum) { minLum = lum; fgR = c[0]; fgG = c[1]; fgB = c[2]; }
+  // Pool output buffer
+  const needed = w * h * 4;
+  if (_transportPixelBufSize < needed) {
+    _transportPixelBuf = new Uint8ClampedArray(needed);
+    _transportPixelBufSize = needed;
   }
-
-  const result = new Uint8ClampedArray(w * h * 4);
+  const result = _transportPixelBuf;
 
   // Fill with background
   for (let i = 0; i < w * h; i++) {
@@ -965,14 +1003,12 @@ function renderTransportPixels(w, h, ditheredPixels) {
     result[i*4+3] = 255;
   }
 
-  // Draw trail history (faded)
+  // Draw trail history (faded, with per-particle colors)
   if (S.transportTrails && p.trailHistory) {
     for (let t = 0; t < p.trailHistory.length; t++) {
       const trail = p.trailHistory[t];
-      const alpha = (t + 1) / (p.trailHistory.length + 1);
-      const tr = bgR + (fgR - bgR) * alpha * 0.5;
-      const tg = bgG + (fgG - bgG) * alpha * 0.5;
-      const tb = bgB + (fgB - bgB) * alpha * 0.5;
+      const trailColorSnap = p.trailColors ? p.trailColors[t] : null;
+      const alpha = (t + 1) / (p.trailHistory.length + 1) * 0.5;
       const trailCount = Math.min(p.count, trail.length / 2);
 
       for (let i = 0; i < trailCount; i++) {
@@ -980,23 +1016,36 @@ function renderTransportPixels(w, h, ditheredPixels) {
         const y = Math.round(trail[i*2+1]);
         if (x >= 0 && x < w && y >= 0 && y < h) {
           const idx = (y * w + x) * 4;
-          result[idx] = tr;
-          result[idx+1] = tg;
-          result[idx+2] = tb;
+          let cr, cg, cb;
+          if (trailColorSnap && i * 3 + 2 < trailColorSnap.length) {
+            cr = trailColorSnap[i*3]; cg = trailColorSnap[i*3+1]; cb = trailColorSnap[i*3+2];
+          } else {
+            cr = 0; cg = 0; cb = 0;
+          }
+          result[idx]   = bgR + (cr - bgR) * alpha;
+          result[idx+1] = bgG + (cg - bgG) * alpha;
+          result[idx+2] = bgB + (cb - bgB) * alpha;
         }
       }
     }
   }
 
-  // Draw particles at current positions
+  // Draw particles at current positions with per-particle colors
+  const hasColors = p.colors && p.colors.length >= p.count * 3;
   for (let i = 0; i < p.count; i++) {
     const x = Math.round(p.positions[i*2]);
     const y = Math.round(p.positions[i*2+1]);
     if (x >= 0 && x < w && y >= 0 && y < h) {
       const idx = (y * w + x) * 4;
-      result[idx] = fgR;
-      result[idx+1] = fgG;
-      result[idx+2] = fgB;
+      if (hasColors) {
+        result[idx]   = p.colors[i*3];
+        result[idx+1] = p.colors[i*3+1];
+        result[idx+2] = p.colors[i*3+2];
+      } else {
+        result[idx] = 0;
+        result[idx+1] = 0;
+        result[idx+2] = 0;
+      }
     }
   }
 
@@ -1214,7 +1263,7 @@ function applyPreset(preset) {
   if (preset.bgColor !== undefined) S.bgColor = preset.bgColor ? [...preset.bgColor] : null;
   if (preset.toneByInput !== undefined) S.toneByInput = preset.toneByInput;
   setPalette(S.paletteName);
-  transportParticles = null;
+  resetTransportParticles();
   syncUIFromState();
 }
 
@@ -1289,7 +1338,7 @@ for (const [k, v] of Object.entries(URL_KEY_MAP)) URL_KEY_REV[v] = k;
 
 // Default values for comparison (only encode non-defaults)
 const DEFAULTS = {
-  algorithm: 'floyd-steinberg', paletteName: 'Black & White', pixelScale: 16,
+  algorithm: 'floyd-steinberg', paletteName: 'Black & White', pixelScale: 7,
   brightness: 0, contrast: 0, gamma: 1.0,
   redBrightness: 0, greenBrightness: 0, blueBrightness: 0,
   diffusionStrength: 1.0, serpentine: false, bayerBias: 0,
@@ -1297,7 +1346,7 @@ const DEFAULTS = {
   hueShift: 0, saturation: 100, outContrast: 0,
   toneStrength: 0, transportEnabled: false, transportMode: 'overdamped',
   customWidth: 0, customHeight: 0, downscaleMethod: 'average',
-  transportMassLock: false, transportTargetDensity: -1, transportRepulsionRadius: 2,
+  transportMassLock: true, transportTargetDensity: 72, transportRepulsionRadius: 2,
 };
 
 function encodeStateToURL() {
@@ -1372,13 +1421,15 @@ function renderLoop(timestamp) {
 
   // Camera mode: capture every frame
   if (S.sourceType === 'camera') {
-    const pixels = getSourcePixels();
-    if (pixels) {
-      sendFrameToWorker(pixels, S.sourceWidth, S.sourceHeight);
+    if (!S.workerBusy) {
+      const pixels = getSourcePixels();
+      if (pixels) {
+        sendFrameToWorker(pixels, S.sourceWidth, S.sourceHeight);
+      }
     }
-    // Transport step even if worker didn't return new frame
+    // Transport: kick worker step (non-blocking) and re-render from latest state
     if (S.transportEnabled && transportParticles) {
-      stepTransportPhysics(S.lastResultW, S.lastResultH);
+      sendTransportStep();
       renderResult();
     }
     if (S.recording) updateRecordingFrame();
@@ -1394,9 +1445,9 @@ function renderLoop(timestamp) {
     }
   }
 
-  // Transport animation continues even with static image
+  // Transport: kick worker step (non-blocking) and re-render from latest state
   if (S.transportEnabled && transportParticles) {
-    stepTransportPhysics(S.lastResultW, S.lastResultH);
+    sendTransportStep();
     renderResult();
   }
 
@@ -1423,7 +1474,7 @@ function initUI() {
       btn.classList.add('active');
       S.algorithm = btn.dataset.algo;
       S.needsRedraw = true;
-      transportParticles = null;
+      resetTransportParticles();
       encodeStateToURL();
     });
   });
@@ -1439,7 +1490,7 @@ function initUI() {
   bindSlider('red-brightness', v => { S.redBrightness = v; }, v => v.toString(), 0);
   bindSlider('green-brightness', v => { S.greenBrightness = v; }, v => v.toString(), 0);
   bindSlider('blue-brightness', v => { S.blueBrightness = v; }, v => v.toString(), 0);
-  bindSlider('pixel-scale', v => { S.pixelScale = v; transportParticles = null; }, v => v + 'x', 16);
+  bindSlider('pixel-scale', v => { S.pixelScale = v; resetTransportParticles(); }, v => v + 'x', 7);
   bindSlider('diffusion-strength', v => { S.diffusionStrength = v / 100; }, v => (v / 100).toFixed(2), 100);
   bindSlider('bayer-bias', v => { S.bayerBias = v / 100; }, v => (v / 100).toFixed(2), 0);
   bindSlider('threshold-level', v => { S.thresholdLevel = v; }, v => v.toString(), 128);
@@ -1451,9 +1502,9 @@ function initUI() {
   bindSlider('tone-strength', v => { S.toneStrength = v; }, v => v + '%', 0);
 
   // Transport sliders
-  bindSlider('transport-spring', v => { S.transportSpring = v / 100; }, v => (v / 100).toFixed(2), 50);
-  bindSlider('transport-damping', v => { S.transportDamping = v / 100; }, v => (v / 100).toFixed(2), 80);
-  bindSlider('transport-repulsion', v => { S.transportRepulsion = v / 100; }, v => (v / 100).toFixed(2), 100);
+  bindSlider('transport-spring', v => { S.transportSpring = v / 100; }, v => (v / 100).toFixed(2), 32);
+  bindSlider('transport-damping', v => { S.transportDamping = v / 100; }, v => (v / 100).toFixed(2), 75);
+  bindSlider('transport-repulsion', v => { S.transportRepulsion = v / 100; }, v => (v / 100).toFixed(2), 0);
   bindSlider('transport-mass', v => { S.transportMass = v / 100; }, v => (v / 100).toFixed(2), 100);
   bindSlider('transport-maxvel', v => { S.transportMaxVel = v; }, v => v.toString(), 5);
   bindSlider('transport-trail-len', v => { S.transportTrailLen = v; }, v => v.toString(), 5);
@@ -1464,7 +1515,7 @@ function initUI() {
       const totalPixels = transportParticles.w * transportParticles.h;
       transportParticles.fixedCount = Math.round(totalPixels * (v / 100));
     }
-  }, v => v < 0 ? 'auto' : v + '%', -1);
+  }, v => v < 0 ? 'auto' : v + '%', 72);
   bindSlider('transport-repulsion-radius', v => { S.transportRepulsionRadius = v; }, v => v.toString(), 2);
   bindSlider('video-duration', v => {}, v => v + 's', 3);
 
@@ -1474,7 +1525,7 @@ function initUI() {
   bindToggle('transport-enable', v => {
     S.transportEnabled = v;
     if (!v) {
-      transportParticles = null;
+      resetTransportParticles();
       S.transportMassLockBrightOffset = 0;
       $('transport-count-row').style.display = 'none';
     }
@@ -1484,6 +1535,7 @@ function initUI() {
     S.transportTrails = v;
     if (transportParticles) {
       transportParticles.trailHistory = v ? [] : null;
+      transportParticles.trailColors = v ? [] : null;
     }
   });
   bindToggle('transport-masslock', v => {
@@ -1546,7 +1598,7 @@ function initUI() {
       S.customWidth = parseInt(btn.dataset.w);
       S.customHeight = parseInt(btn.dataset.h);
       S.pixelScale = 1; // presets set exact resolution
-      transportParticles = null;
+      resetTransportParticles();
       S.needsRedraw = true;
       syncUIFromState();
     });
@@ -1845,7 +1897,7 @@ function initUI() {
     }
     if (key === 't' || key === 'T') {
       S.transportEnabled = !S.transportEnabled;
-      if (!S.transportEnabled) transportParticles = null;
+      if (!S.transportEnabled) resetTransportParticles();
       $('transport-enable').classList.toggle('on', S.transportEnabled);
       S.needsRedraw = true;
       return;
@@ -1855,7 +1907,7 @@ function initUI() {
       S.pixelScale = Math.max(1, S.pixelScale - 1);
       $('pixel-scale').value = S.pixelScale;
       updateSliderValue('pixel-scale', S.pixelScale + 'x');
-      transportParticles = null;
+      resetTransportParticles();
       S.needsRedraw = true;
       return;
     }
@@ -1864,7 +1916,7 @@ function initUI() {
       S.pixelScale = Math.min(64, S.pixelScale + 1);
       $('pixel-scale').value = S.pixelScale;
       updateSliderValue('pixel-scale', S.pixelScale + 'x');
-      transportParticles = null;
+      resetTransportParticles();
       S.needsRedraw = true;
       return;
     }
@@ -1879,7 +1931,7 @@ function initUI() {
         b.classList.toggle('active', b.dataset.algo === S.algorithm);
       });
       S.needsRedraw = true;
-      transportParticles = null;
+      resetTransportParticles();
     }
   });
 

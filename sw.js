@@ -1,20 +1,21 @@
 // Dither Studio — Service Worker
-// Stale-while-revalidate caching for offline support
+// Network-first with cache fallback for offline support
 
-const CACHE_NAME = 'dither-studio-v3';
+const CACHE_NAME = 'dither-studio-v5';
+// Use relative paths for GitHub Pages subdirectory compatibility
 const APP_SHELL = [
-  '/',
-  '/index.html',
-  '/app.js?v=3',
-  '/dither-worker.js',
-  '/transport-worker.js',
-  '/palettes.js?v=3',
-  '/pipeline.js?v=3',
-  '/export.js?v=3',
-  '/manifest.json?v=3',
+  './',
+  './index.html',
+  './app.js?v=5',
+  './dither-worker.js?v=5',
+  './transport-worker.js?v=5',
+  './palettes.js?v=5',
+  './pipeline.js?v=5',
+  './export.js?v=5',
+  './manifest.json?v=5',
 ];
 
-// Precache app shell on install
+// Precache app shell on install — skip waiting immediately
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
@@ -23,7 +24,7 @@ self.addEventListener('install', event => {
   );
 });
 
-// Clean old caches on activate
+// Clean ALL old caches on activate, claim clients immediately
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys =>
@@ -35,23 +36,19 @@ self.addEventListener('activate', event => {
   );
 });
 
-// Stale-while-revalidate: serve from cache, update in background
+// Network-first: always try to fetch fresh, fall back to cache for offline
 self.addEventListener('fetch', event => {
-  // Only handle same-origin GET requests
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    caches.open(CACHE_NAME).then(cache =>
-      cache.match(event.request).then(cached => {
-        const fetchPromise = fetch(event.request).then(response => {
-          if (response.ok) {
-            cache.put(event.request, response.clone());
-          }
-          return response;
-        }).catch(() => cached);
-
-        return cached || fetchPromise;
+    fetch(event.request)
+      .then(response => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+        return response;
       })
-    )
+      .catch(() => caches.match(event.request))
   );
 });
