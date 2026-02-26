@@ -1,18 +1,17 @@
 // Dither Studio — Service Worker
 // Stale-while-revalidate caching for offline support
 
-const CACHE_NAME = 'dither-studio-v1';
+const CACHE_NAME = 'dither-studio-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/app.js',
+  '/app.js?v=2',
   '/dither-worker.js',
   '/transport-worker.js',
-  '/palettes.js',
-  '/pipeline.js',
-  '/export.js',
-  '/manifest.json',
-  '/docs/manual.html'
+  '/palettes.js?v=2',
+  '/pipeline.js?v=2',
+  '/export.js?v=2',
+  '/manifest.json?v=2',
 ];
 
 // Precache app shell on install
