@@ -6,6 +6,24 @@
 const Pipeline = {
   // Apply post-processing to dithered result (RGBA Uint8ClampedArray)
   // inputPixels: original preprocessed input (for tone-by-input)
+  // Cache lightest color per palette (H7: avoids O(w*h) scan every frame)
+  _cachedLightestPaletteKey: null,
+  _cachedLightest: [255, 255, 255],
+
+  lightestFromPalette(paletteColors) {
+    const key = paletteColors.map(c => c.join(',')).join('|');
+    if (key === this._cachedLightestPaletteKey) return this._cachedLightest;
+    let maxLum = -1;
+    let lr = 255, lg = 255, lb = 255;
+    for (const c of paletteColors) {
+      const lum = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+      if (lum > maxLum) { maxLum = lum; lr = c[0]; lg = c[1]; lb = c[2]; }
+    }
+    this._cachedLightestPaletteKey = key;
+    this._cachedLightest = [lr, lg, lb];
+    return this._cachedLightest;
+  },
+
   process(dithered, inputPixels, w, h, params) {
     const hueShift = params.hueShift || 0;
     const saturation = params.saturation !== undefined ? params.saturation / 100 : 1.0;
@@ -18,25 +36,12 @@ const Pipeline = {
     const bgG = bgColor ? bgColor[1] : -1;
     const bgB = bgColor ? bgColor[2] : -1;
 
-    // Find lightest palette color (used as background detection)
-    // We detect "background" as the lightest color in the output
+    // Lightest palette color for background detection (O(palette) not O(pixels))
     const needsBgReplace = bgColor !== null;
     let lightestR = 255, lightestG = 255, lightestB = 255;
-    if (needsBgReplace) {
-      // Scan for lightest color by luminance
-      let maxLum = -1;
-      const colorSet = new Map();
-      for (let i = 0; i < w * h * 4; i += 4) {
-        const key = (dithered[i] << 16) | (dithered[i+1] << 8) | dithered[i+2];
-        if (!colorSet.has(key)) {
-          const lum = dithered[i] * 0.299 + dithered[i+1] * 0.587 + dithered[i+2] * 0.114;
-          colorSet.set(key, lum);
-          if (lum > maxLum) {
-            maxLum = lum;
-            lightestR = dithered[i]; lightestG = dithered[i+1]; lightestB = dithered[i+2];
-          }
-        }
-      }
+    if (needsBgReplace && params.paletteColors) {
+      const l = this.lightestFromPalette(params.paletteColors);
+      lightestR = l[0]; lightestG = l[1]; lightestB = l[2];
     }
 
     const noOp = hueShift === 0 && saturation === 1.0 && contrast === 0 &&

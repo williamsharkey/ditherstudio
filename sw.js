@@ -1,18 +1,18 @@
 // Dither Studio — Service Worker
 // Network-first with cache fallback for offline support
 
-const CACHE_NAME = 'dither-studio-v5';
+const CACHE_NAME = 'dither-studio-v7';
 // Use relative paths for GitHub Pages subdirectory compatibility
 const APP_SHELL = [
   './',
   './index.html',
-  './app.js?v=5',
-  './dither-worker.js?v=5',
-  './transport-worker.js?v=5',
-  './palettes.js?v=5',
-  './pipeline.js?v=5',
-  './export.js?v=5',
-  './manifest.json?v=5',
+  './app.js?v=7',
+  './dither-worker.js?v=7',
+  './transport-worker.js?v=7',
+  './palettes.js?v=7',
+  './pipeline.js?v=7',
+  './export.js?v=7',
+  './manifest.json?v=7',
 ];
 
 // Precache app shell on install — skip waiting immediately

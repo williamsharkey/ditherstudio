@@ -64,6 +64,8 @@ const S = {
   transportMassLock: true,
   transportTargetDensity: 72,
   transportRepulsionRadius: 2,
+  transportNoOverlap: true,
+  transportSwap: true,
   transportMassLockBrightOffset: 0,
 
   // Export
@@ -96,7 +98,7 @@ const ctx = canvas.getContext('2d', { willReadFrequently: false });
 const video = $('camera-video');
 
 // ─── Worker ───
-const ditherWorker = new Worker('dither-worker.js?v=5');
+const ditherWorker = new Worker('dither-worker.js?v=7');
 
 // ─── Undo/Redo ───
 const undoStack = [];
@@ -109,7 +111,8 @@ const UNDO_KEYS = [
   'outContrast', 'toneByInput', 'toneStrength', 'pixelScale', 'customWidth', 'customHeight',
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
-  'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius'
+  'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
+  'transportNoOverlap', 'transportSwap'
 ];
 
 function saveUndoState() {
@@ -202,9 +205,7 @@ function updateCustomPaletteUI() {
   container.appendChild(addBtn);
 }
 
-// ─── Palette Buttons with Hover Preview ───
-let palettePreviewActive = null;
-
+// ─── Palette Buttons ───
 function populatePaletteButtons() {
   const container = $('palette-buttons');
   container.innerHTML = '';
@@ -236,33 +237,13 @@ function populatePaletteButtons() {
     countSpan.textContent = pal.colors.length;
     btn.appendChild(countSpan);
 
-    btn.addEventListener('mouseenter', () => previewPaletteHover(name));
-    btn.addEventListener('mouseleave', () => previewPaletteEnd());
     btn.addEventListener('click', () => commitPalette(name));
 
     container.appendChild(btn);
   }
 }
 
-function previewPaletteHover(name) {
-  if (palettePreviewActive === name) return;
-  palettePreviewActive = name;
-  const pal = PALETTES[name];
-  if (!pal) return;
-  S.paletteColors = name === 'Custom' ? [...S.customColors] : [...pal.colors];
-  S.paletteKey = name + ':' + S.paletteColors.map(c => c.join(',')).join('|');
-  updatePaletteStrip();
-  S.needsRedraw = true;
-}
-
-function previewPaletteEnd() {
-  if (palettePreviewActive === null) return;
-  palettePreviewActive = null;
-  setPalette(S.paletteName);
-}
-
 function commitPalette(name) {
-  palettePreviewActive = null;
   saveUndoState();
   setPalette(name);
   // Update active class on buttons
@@ -350,6 +331,7 @@ ditherWorker.onmessage = function(e) {
   const msg = e.data;
   if (msg.type === 'result') {
     S.workerBusy = false;
+    _lastClassifiedPixels = null; // invalidate classify cache for new frame
     S.lastResult = new Uint8ClampedArray(msg.pixels);
     S.lastInputPixels = new Uint8ClampedArray(msg.inputPixels);
     S.lastResultW = msg.width;
@@ -379,7 +361,8 @@ function renderResult() {
     toneByInput: S.toneByInput,
     toneColor: S.toneColor,
     toneStrength: S.toneStrength,
-    bgColor: S.bgColor
+    bgColor: S.bgColor,
+    paletteColors: S.paletteColors
   });
 
   // Set canvas to working resolution (CSS scales it up with pixelated rendering)
@@ -569,7 +552,7 @@ function getSourcePixels() {
 }
 
 // ─── Transport System — Mass-Preserving Particle Physics ───
-const transportWorker = new Worker('transport-worker.js?v=5');
+const transportWorker = new Worker('transport-worker.js?v=7');
 let transportParticles = null;
 let transportWorkerBusy = false;
 
@@ -614,7 +597,8 @@ function sendTransportStep() {
   // Copy positions/velocities (we keep originals for rendering)
   const posBuf = new Float32Array(p.positions);
   const velBuf = new Float32Array(p.velocities);
-  const targetsBuf = new Float32Array(p.targets);
+  // targets buffer may be oversized from pooling — only send the active portion
+  const targetsBuf = new Float32Array(p.targets.subarray(0, p.targetCount * 2));
 
   const msg = {
     type: 'step',
@@ -629,6 +613,8 @@ function sendTransportStep() {
     damping: S.transportDamping,
     repulsion: S.transportRepulsion,
     repulsionRadius: S.transportRepulsionRadius,
+    noOverlap: S.transportNoOverlap,
+    swap: S.transportSwap,
     mass: S.transportMass,
     maxVel: S.transportMaxVel,
     width: p.w,
@@ -638,9 +624,9 @@ function sendTransportStep() {
 
   const transferList = [posBuf.buffer, velBuf.buffer, targetsBuf.buffer];
 
-  // Send target colors for per-particle color assignment
+  // Send target colors for per-particle color assignment (may be oversized from pooling)
   if (p.targetColors) {
-    const tcBuf = new Uint8Array(p.targetColors);
+    const tcBuf = new Uint8Array(p.targetColors.subarray(0, p.targetCount * 3));
     msg.targetColors = tcBuf.buffer;
     transferList.push(tcBuf.buffer);
   }
@@ -739,11 +725,25 @@ function classifyDitheredPixels(pixels, w, h) {
   return { buffer: _targetBuf, colors: _targetColorBuf, count };
 }
 
+// ─── Per-Frame classifyDitheredPixels Cache ───
+// Avoids calling classifyDitheredPixels twice per frame (applyMassLockFeedback + updateTransportTargets)
+let _lastClassified = null;
+let _lastClassifiedPixels = null;
+
+function getCachedClassified(pixels, w, h) {
+  if (pixels === _lastClassifiedPixels && _lastClassified) {
+    return _lastClassified;
+  }
+  _lastClassified = classifyDitheredPixels(pixels, w, h);
+  _lastClassifiedPixels = pixels;
+  return _lastClassified;
+}
+
 // ─── Mass-Lock Brightness Feedback (PID Controller) ───
 function applyMassLockFeedback(pixels, w, h) {
   if (!S.transportMassLock || !transportParticles || !transportParticles.fixedCount) return;
 
-  const onPixels = classifyDitheredPixels(pixels, w, h);
+  const onPixels = getCachedClassified(pixels, w, h);
   const actual = onPixels.count;
   const desired = transportParticles.fixedCount;
   const totalPixels = w * h;
@@ -847,14 +847,18 @@ function initTransportParticles(pixels, w, h) {
 }
 
 function updateTransportTargets(pixels, w, h) {
-  const classified = classifyDitheredPixels(pixels, w, h);
+  const classified = getCachedClassified(pixels, w, h);
   const newTargetCount = classified.count;
   const p = transportParticles;
 
-  // Copy from pooled buffers
-  p.targets = new Float32Array(newTargetCount * 2);
+  // Reuse target buffers if capacity is sufficient
+  if (!p.targets || p.targets.length < newTargetCount * 2) {
+    p.targets = new Float32Array(Math.max(newTargetCount * 2, 1024));
+  }
   p.targets.set(classified.buffer.subarray(0, newTargetCount * 2));
-  p.targetColors = new Uint8Array(newTargetCount * 3);
+  if (!p.targetColors || p.targetColors.length < newTargetCount * 3) {
+    p.targetColors = new Uint8Array(Math.max(newTargetCount * 3, 1536));
+  }
   p.targetColors.set(classified.colors.subarray(0, newTargetCount * 3));
   p.targetCount = newTargetCount;
 
@@ -891,8 +895,13 @@ function updateTransportTargets(pixels, w, h) {
     }
   }
 
-  assignTargets();
+  // Assignment is handled by transport-worker.js each step — no main-thread assignment needed
 }
+
+// assignTargets() — NOT called per-frame. The transport worker handles assignment + color mapping
+// on every step (see transport-worker.js). Kept for potential future use (e.g. initial assignment).
+let _mainRandomPerm = null;
+let _mainRandomPermSize = 0;
 
 function assignTargets() {
   const p = transportParticles;
@@ -910,14 +919,21 @@ function assignTargets() {
   };
 
   if (S.transportAssignment === 'random') {
-    // Fisher-Yates shuffle of target indices, wrap on overflow
-    const indices = Array.from({length: p.targetCount}, (_, i) => i);
-    for (let i = indices.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [indices[i], indices[j]] = [indices[j], indices[i]];
+    // Use cached permutation to prevent center-blob convergence
+    const needed = Math.max(p.count, p.targetCount);
+    if (!_mainRandomPerm || _mainRandomPermSize < needed) {
+      _mainRandomPermSize = needed;
+      _mainRandomPerm = new Int32Array(needed);
+      for (let i = 0; i < needed; i++) _mainRandomPerm[i] = i;
+      for (let i = needed - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = _mainRandomPerm[i];
+        _mainRandomPerm[i] = _mainRandomPerm[j];
+        _mainRandomPerm[j] = tmp;
+      }
     }
     for (let i = 0; i < p.count; i++) {
-      const ti = indices[i % indices.length];
+      const ti = _mainRandomPerm[i] % p.targetCount;
       assigned[i*2] = p.targets[ti*2];
       assigned[i*2+1] = p.targets[ti*2+1];
       copyColor(i, ti);
@@ -1242,6 +1258,7 @@ const PRESET_KEYS = [
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
   'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
+  'transportNoOverlap', 'transportSwap',
 ];
 
 function getStateSnapshot() {
@@ -1332,6 +1349,7 @@ const URL_KEY_MAP = {
   ts: 'toneStrength', te: 'transportEnabled', tm: 'transportMode',
   cw: 'customWidth', ch: 'customHeight', dm: 'downscaleMethod',
   ml: 'transportMassLock', td: 'transportTargetDensity', rr: 'transportRepulsionRadius',
+  no: 'transportNoOverlap', sw: 'transportSwap',
 };
 const URL_KEY_REV = {};
 for (const [k, v] of Object.entries(URL_KEY_MAP)) URL_KEY_REV[v] = k;
@@ -1347,6 +1365,7 @@ const DEFAULTS = {
   toneStrength: 0, transportEnabled: false, transportMode: 'overdamped',
   customWidth: 0, customHeight: 0, downscaleMethod: 'average',
   transportMassLock: true, transportTargetDensity: 72, transportRepulsionRadius: 2,
+  transportNoOverlap: true, transportSwap: true,
 };
 
 function encodeStateToURL() {
@@ -1553,6 +1572,8 @@ function initUI() {
       S.transportMassLockBrightOffset = 0;
     }
   });
+  bindToggle('transport-no-overlap', v => { S.transportNoOverlap = v; });
+  bindToggle('transport-swap', v => { S.transportSwap = v; });
   bindToggle('export-transparent', v => { S.exportTransparent = v; });
 
   // Selects
@@ -1562,7 +1583,7 @@ function initUI() {
   });
   $('transport-assignment').addEventListener('change', e => {
     S.transportAssignment = e.target.value;
-    if (transportParticles) assignTargets();
+    // Worker picks up S.transportAssignment on next sendTransportStep()
   });
   $('transport-init').addEventListener('change', e => {
     S.transportInit = e.target.value;
@@ -2071,6 +2092,8 @@ function syncUIFromState() {
   $('transport-enable').classList.toggle('on', S.transportEnabled);
   $('transport-trails').classList.toggle('on', S.transportTrails);
   $('transport-masslock').classList.toggle('on', S.transportMassLock);
+  $('transport-no-overlap').classList.toggle('on', S.transportNoOverlap);
+  $('transport-swap').classList.toggle('on', S.transportSwap);
   $('transport-mode').value = S.transportMode;
   $('transport-assignment').value = S.transportAssignment;
   $('transport-init').value = S.transportInit;

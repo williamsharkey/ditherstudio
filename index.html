@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="manifest" href="manifest.json?v=5">
+<link rel="manifest" href="manifest.json?v=7">
 <title>Dither Studio</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1171,6 +1171,14 @@ html, body {
             <span class="ctrl-value" data-for="transport-repulsion-radius">2</span>
             <button class="ctrl-reset" data-reset="transport-repulsion-radius" title="Reset">&#8634;</button>
           </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">No Overlap</span>
+            <button class="ctrl-toggle on" id="transport-no-overlap"></button>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Swap Opt.</span>
+            <button class="ctrl-toggle on" id="transport-swap"></button>
+          </div>
           <div class="ctrl-row" id="transport-count-row" style="display:none">
             <span class="ctrl-label" style="color:var(--accent)">Particles</span>
             <span id="transport-count-display" style="font-size:12px;color:var(--text-dim)">0 / 0</span>
@@ -1282,13 +1290,13 @@ html, body {
 <!-- Hidden file input -->
 <input type="file" id="file-input" accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none">
 
-<script src="palettes.js?v=5"></script>
-<script src="pipeline.js?v=5"></script>
-<script src="export.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="palettes.js?v=7"></script>
+<script src="pipeline.js?v=7"></script>
+<script src="export.js?v=7"></script>
+<script src="app.js?v=7"></script>
 <script>
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js?v=5', { updateViaCache: 'none' })
+  navigator.serviceWorker.register('sw.js?v=7', { updateViaCache: 'none' })
     .then(reg => { reg.update(); })
     .catch(() => {});
 }
