@@ -158,6 +158,44 @@ function getErrorBuffer(size) {
   return _errBuf;
 }
 
+// ─── Adaptive Throttle ───
+let _adaptiveLevel = 0;
+let _lastLevelChange = 0;
+
+function computeAdaptiveLevel(fps) {
+  const now = Date.now();
+  let target = 0;
+  if (fps < 14) target = 3;
+  else if (fps < 20) target = 2;
+  else if (fps < 28) target = 1;
+
+  if (target > _adaptiveLevel && now - _lastLevelChange >= 500) {
+    _adaptiveLevel++;
+    _lastLevelChange = now;
+  } else if (target < _adaptiveLevel && fps >= 34 && now - _lastLevelChange >= 1500) {
+    _adaptiveLevel--;
+    _lastLevelChange = now;
+  }
+  return _adaptiveLevel;
+}
+
+// ─── Nearest-neighbor upscale (RGBA) ───
+function nearestUpscale(src, srcW, srcH, dstW, dstH) {
+  const dst = new Uint8ClampedArray(dstW * dstH * 4);
+  const scaleX = srcW / dstW;
+  const scaleY = srcH / dstH;
+  for (let dy = 0; dy < dstH; dy++) {
+    const sy = (dy * scaleY) | 0;
+    for (let dx = 0; dx < dstW; dx++) {
+      const sx = (dx * scaleX) | 0;
+      const si = (sy * srcW + sx) * 4;
+      const di = (dy * dstW + dx) * 4;
+      dst[di] = src[si]; dst[di+1] = src[si+1]; dst[di+2] = src[si+2]; dst[di+3] = 255;
+    }
+  }
+  return dst;
+}
+
 // ─── Downscale (area average) ───
 function downscaleAverage(src, srcW, srcH, dstW, dstH) {
   const needed = dstW * dstH * 4;
@@ -612,21 +650,30 @@ self.onmessage = function(e) {
       currentPaletteKey = paletteKey;
     }
 
+    // Adaptive throttle: reduce working resolution when FPS drops
+    const adaptiveLevel = computeAdaptiveLevel(msg.currentFps || 60);
+    const reductionShift = adaptiveLevel >= 2 ? adaptiveLevel - 1 : 0; // 0,0,1,2
+    const effectiveW = Math.max(8, dstW >> reductionShift);
+    const effectiveH = Math.max(8, dstH >> reductionShift);
+    const reduced = reductionShift > 0;
+    // Force nearest downscale at level >= 1 (skip expensive area averaging)
+    const effectiveMethod = adaptiveLevel >= 1 ? 'nearest' : (downscaleMethod || 'average');
+
     // Downscale
     const srcData = new Uint8ClampedArray(pixels);
     let downscaled;
-    if (srcW === dstW && srcH === dstH) {
+    if (srcW === effectiveW && srcH === effectiveH) {
       downscaled = srcData;
     } else {
-      switch (downscaleMethod || 'average') {
-        case 'nearest': downscaled = downscaleNearest(srcData, srcW, srcH, dstW, dstH); break;
-        case 'bilinear': downscaled = downscaleBilinear(srcData, srcW, srcH, dstW, dstH); break;
-        default: downscaled = downscaleAverage(srcData, srcW, srcH, dstW, dstH); break;
+      switch (effectiveMethod) {
+        case 'nearest': downscaled = downscaleNearest(srcData, srcW, srcH, effectiveW, effectiveH); break;
+        case 'bilinear': downscaled = downscaleBilinear(srcData, srcW, srcH, effectiveW, effectiveH); break;
+        default: downscaled = downscaleAverage(srcData, srcW, srcH, effectiveW, effectiveH); break;
       }
     }
 
     // Pre-process
-    preprocess(downscaled, dstW, dstH, {
+    preprocess(downscaled, effectiveW, effectiveH, {
       brightness: brightness || 0,
       contrast: contrast || 0,
       gamma: gamma || 1.0,
@@ -643,48 +690,65 @@ self.onmessage = function(e) {
     const strength = diffusionStrength !== undefined ? diffusionStrength : 1.0;
 
     if (KERNELS[algorithm]) {
-      result = ditherErrorDiffusion(downscaled, dstW, dstH, currentLUT, flatPalette, nColors,
+      result = ditherErrorDiffusion(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors,
                                      KERNELS[algorithm], strength, !!serpentine);
     } else if (algorithm === 'bayer2') {
-      result = ditherOrdered(downscaled, dstW, dstH, currentLUT, flatPalette, nColors, 2, bayerBias || 0);
+      result = ditherOrdered(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors, 2, bayerBias || 0);
     } else if (algorithm === 'bayer4') {
-      result = ditherOrdered(downscaled, dstW, dstH, currentLUT, flatPalette, nColors, 4, bayerBias || 0);
+      result = ditherOrdered(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors, 4, bayerBias || 0);
     } else if (algorithm === 'bayer8') {
-      result = ditherOrdered(downscaled, dstW, dstH, currentLUT, flatPalette, nColors, 8, bayerBias || 0);
+      result = ditherOrdered(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors, 8, bayerBias || 0);
     } else if (algorithm === 'bayer16') {
-      result = ditherOrdered(downscaled, dstW, dstH, currentLUT, flatPalette, nColors, 16, bayerBias || 0);
+      result = ditherOrdered(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors, 16, bayerBias || 0);
     } else if (algorithm === 'threshold') {
       // Apply threshold as brightness offset before quantization
       const thr = (thresholdLevel !== undefined ? thresholdLevel : 128) - 128;
-      for (let i = 0; i < dstW * dstH * 4; i += 4) {
+      for (let i = 0; i < effectiveW * effectiveH * 4; i += 4) {
         downscaled[i] = Math.max(0, Math.min(255, downscaled[i] + thr));
         downscaled[i+1] = Math.max(0, Math.min(255, downscaled[i+1] + thr));
         downscaled[i+2] = Math.max(0, Math.min(255, downscaled[i+2] + thr));
       }
-      result = ditherThreshold(downscaled, dstW, dstH, currentLUT, flatPalette, nColors, thresholdLevel || 128);
+      result = ditherThreshold(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors, thresholdLevel || 128);
     } else if (algorithm === 'random') {
-      result = ditherRandom(downscaled, dstW, dstH, currentLUT, flatPalette, nColors);
+      result = ditherRandom(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors);
     } else if (algorithm === 'blue-noise') {
-      result = ditherBlueNoise(downscaled, dstW, dstH, currentLUT, flatPalette, nColors);
+      result = ditherBlueNoise(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors);
     } else if (algorithm === 'halftone') {
-      result = ditherHalftone(downscaled, dstW, dstH, currentLUT, flatPalette, nColors,
+      result = ditherHalftone(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors,
                               halftoneSize || 4, halftoneAngle || 45);
     } else {
       // Default to Floyd-Steinberg
-      result = ditherErrorDiffusion(downscaled, dstW, dstH, currentLUT, flatPalette, nColors,
+      result = ditherErrorDiffusion(downscaled, effectiveW, effectiveH, currentLUT, flatPalette, nColors,
                                      KERNELS['floyd-steinberg'], strength, !!serpentine);
     }
 
-    // Transfer result back (zero-copy)
-    const resultBuffer = result.buffer;
-    const inputBuffer = inputCopy.buffer;
-    self.postMessage({
-      type: 'result',
-      pixels: resultBuffer,
-      inputPixels: inputBuffer,
-      width: dstW,
-      height: dstH,
-      frameId: frameId
-    }, [resultBuffer, inputBuffer]);
+    // If resolution was reduced, upscale back to original dstW×dstH
+    if (reduced) {
+      result = nearestUpscale(result, effectiveW, effectiveH, dstW, dstH);
+      const upInput = nearestUpscale(inputCopy, effectiveW, effectiveH, dstW, dstH);
+      // Transfer upscaled buffers
+      self.postMessage({
+        type: 'result',
+        pixels: result.buffer,
+        inputPixels: upInput.buffer,
+        width: dstW,
+        height: dstH,
+        frameId: frameId,
+        adaptiveLevel: adaptiveLevel
+      }, [result.buffer, upInput.buffer]);
+    } else {
+      // Transfer result back (zero-copy)
+      const resultBuffer = result.buffer;
+      const inputBuffer = inputCopy.buffer;
+      self.postMessage({
+        type: 'result',
+        pixels: resultBuffer,
+        inputPixels: inputBuffer,
+        width: dstW,
+        height: dstH,
+        frameId: frameId,
+        adaptiveLevel: adaptiveLevel
+      }, [resultBuffer, inputBuffer]);
+    }
   }
 };

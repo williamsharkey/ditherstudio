@@ -66,6 +66,8 @@ const S = {
   transportRepulsionRadius: 2,
   transportNoOverlap: true,
   transportSwap: true,
+  transportColorLock: false,
+  transportColorWeights: null,
   transportMassLockBrightOffset: 0,
 
   // Export
@@ -98,7 +100,7 @@ const ctx = canvas.getContext('2d', { willReadFrequently: false });
 const video = $('camera-video');
 
 // ─── Worker ───
-const ditherWorker = new Worker('dither-worker.js?v=7');
+const ditherWorker = new Worker('dither-worker.js?v=9');
 
 // ─── Undo/Redo ───
 const undoStack = [];
@@ -112,7 +114,7 @@ const UNDO_KEYS = [
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
   'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
-  'transportNoOverlap', 'transportSwap'
+  'transportNoOverlap', 'transportSwap', 'transportColorLock'
 ];
 
 function saveUndoState() {
@@ -154,6 +156,12 @@ function setPalette(name) {
   S.paletteKey = name + ':' + S.paletteColors.map(c => c.join(',')).join('|');
   updatePaletteStrip();
   updateCustomPaletteUI();
+  // Reset color weights when palette changes while locked
+  if (S.transportColorLock) {
+    buildEqualWeights();
+    rebuildColorWeightUI();
+    resetTransportParticles();
+  }
   S.needsRedraw = true;
 }
 
@@ -322,7 +330,8 @@ function sendFrameToWorker(pixels, srcW, srcH) {
     halftoneSize: S.halftoneSize,
     halftoneAngle: S.halftoneAngle,
     downscaleMethod: S.downscaleMethod,
-    frameId: S.frameId
+    frameId: S.frameId,
+    currentFps: S.currentFps || 60
   }, [buffer]);
 }
 
@@ -336,6 +345,7 @@ ditherWorker.onmessage = function(e) {
     S.lastInputPixels = new Uint8ClampedArray(msg.inputPixels);
     S.lastResultW = msg.width;
     S.lastResultH = msg.height;
+    S.adaptiveLevel = msg.adaptiveLevel || 0;
     renderResult();
   }
 };
@@ -552,7 +562,7 @@ function getSourcePixels() {
 }
 
 // ─── Transport System — Mass-Preserving Particle Physics ───
-const transportWorker = new Worker('transport-worker.js?v=7');
+const transportWorker = new Worker('transport-worker.js?v=9');
 let transportParticles = null;
 let transportWorkerBusy = false;
 
@@ -615,11 +625,13 @@ function sendTransportStep() {
     repulsionRadius: S.transportRepulsionRadius,
     noOverlap: S.transportNoOverlap,
     swap: S.transportSwap,
+    colorLock: S.transportColorLock,
     mass: S.transportMass,
     maxVel: S.transportMaxVel,
     width: p.w,
     height: p.h,
-    frameId: S.frameId
+    frameId: S.frameId,
+    currentFps: S.currentFps || 60
   };
 
   const transferList = [posBuf.buffer, velBuf.buffer, targetsBuf.buffer];
@@ -629,6 +641,13 @@ function sendTransportStep() {
     const tcBuf = new Uint8Array(p.targetColors.subarray(0, p.targetCount * 3));
     msg.targetColors = tcBuf.buffer;
     transferList.push(tcBuf.buffer);
+  }
+
+  // Send particle colors for color-locked assignment
+  if (S.transportColorLock && p.colors) {
+    const pcBuf = new Uint8Array(p.colors.subarray(0, p.count * 3));
+    msg.particleColors = pcBuf.buffer;
+    transferList.push(pcBuf.buffer);
   }
 
   transportWorker.postMessage(msg, transferList);
@@ -757,12 +776,275 @@ function applyMassLockFeedback(pixels, w, h) {
   S.transportMassLockBrightOffset = Math.max(-50, Math.min(50, S.transportMassLockBrightOffset));
 }
 
+// ─── Color Lock Helpers ───
+function colorKey(r, g, b) { return r + ',' + g + ',' + b; }
+
+// Return palette colors excluding the background (lightest) color —
+// background-colored particles are invisible and have no targets.
+function getNonBGPaletteColors() {
+  const [bgR, bgG, bgB] = getBackgroundColor();
+  return S.paletteColors.filter(c => c[0] !== bgR || c[1] !== bgG || c[2] !== bgB);
+}
+
+function buildEqualWeights() {
+  const colors = getNonBGPaletteColors();
+  if (colors.length === 0) return; // all-same-luminance edge case
+  const pct = 100 / colors.length;
+  S.transportColorWeights = {};
+  for (const c of colors) {
+    S.transportColorWeights[colorKey(c[0], c[1], c[2])] = pct;
+  }
+}
+
+function rebuildColorWeightUI() {
+  if (!S.transportColorWeights) buildEqualWeights();
+  const container = $('color-weight-sliders');
+  container.innerHTML = '';
+  $('color-weights-group').style.display = '';
+
+  // Ensure all non-BG palette colors exist in weights, remove stale entries
+  const nonBG = getNonBGPaletteColors();
+  const validKeys = new Set();
+  for (const c of nonBG) {
+    const key = colorKey(c[0], c[1], c[2]);
+    validKeys.add(key);
+    if (!(key in S.transportColorWeights)) {
+      S.transportColorWeights[key] = 0;
+    }
+  }
+  for (const key of Object.keys(S.transportColorWeights)) {
+    if (!validKeys.has(key)) delete S.transportColorWeights[key];
+  }
+  // Normalize so total = 100
+  normalizeWeights();
+
+  const keys = Object.keys(S.transportColorWeights);
+  for (const key of keys) {
+    const [r, g, b] = key.split(',').map(Number);
+    const row = document.createElement('div');
+    row.className = 'ctrl-row';
+    row.style.gap = '4px';
+
+    const swatch = document.createElement('span');
+    swatch.style.cssText = `display:inline-block;width:14px;height:14px;border-radius:3px;background:rgb(${r},${g},${b});border:1px solid rgba(255,255,255,0.2);flex-shrink:0`;
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'ctrl-slider';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '0.1';
+    slider.value = S.transportColorWeights[key];
+    slider.style.flex = '1';
+
+    const label = document.createElement('span');
+    label.className = 'ctrl-value';
+    label.style.minWidth = '36px';
+    label.textContent = Math.round(S.transportColorWeights[key]) + '%';
+
+    slider.addEventListener('input', () => {
+      const newVal = parseFloat(slider.value);
+      const oldVal = S.transportColorWeights[key];
+      adjustWeightsForChange(key, newVal, oldVal);
+      updateWeightSliders();
+    });
+
+    row.appendChild(swatch);
+    row.appendChild(slider);
+    row.appendChild(label);
+    container.appendChild(row);
+  }
+}
+
+function normalizeWeights() {
+  const w = S.transportColorWeights;
+  const keys = Object.keys(w);
+  let total = 0;
+  for (const k of keys) total += w[k];
+  if (total <= 0) {
+    const pct = 100 / keys.length;
+    for (const k of keys) w[k] = pct;
+    return;
+  }
+  for (const k of keys) w[k] = (w[k] / total) * 100;
+}
+
+function adjustWeightsForChange(changedKey, newVal, oldVal) {
+  const w = S.transportColorWeights;
+  const keys = Object.keys(w);
+  newVal = Math.max(0, Math.min(100, newVal));
+  const delta = newVal - oldVal;
+  w[changedKey] = newVal;
+
+  // Distribute -delta proportionally across others
+  const otherKeys = keys.filter(k => k !== changedKey);
+  let otherTotal = 0;
+  for (const k of otherKeys) otherTotal += w[k];
+
+  if (otherTotal <= 0) {
+    // If all others are 0, distribute equally
+    const share = -delta / otherKeys.length;
+    for (const k of otherKeys) w[k] = Math.max(0, share);
+  } else {
+    for (const k of otherKeys) {
+      w[k] = Math.max(0, w[k] - delta * (w[k] / otherTotal));
+    }
+  }
+  // Re-normalize to exactly 100
+  normalizeWeights();
+}
+
+function updateWeightSliders() {
+  const container = $('color-weight-sliders');
+  const rows = container.children;
+  const keys = Object.keys(S.transportColorWeights);
+  for (let i = 0; i < keys.length && i < rows.length; i++) {
+    const slider = rows[i].querySelector('input[type="range"]');
+    const label = rows[i].querySelector('.ctrl-value');
+    if (slider) slider.value = S.transportColorWeights[keys[i]];
+    if (label) label.textContent = Math.round(S.transportColorWeights[keys[i]]) + '%';
+  }
+}
+
+function sampleCurrentWeights() {
+  const p = transportParticles;
+  if (!p || !p.colors || p.count === 0) return;
+
+  const [bgR, bgG, bgB] = getBackgroundColor();
+  const bgKey = colorKey(bgR, bgG, bgB);
+
+  S.transportColorWeights = {};
+  // Count particles per non-BG color
+  const counts = {};
+  let total = 0;
+  for (let i = 0; i < p.count; i++) {
+    const key = colorKey(p.colors[i*3], p.colors[i*3+1], p.colors[i*3+2]);
+    if (key === bgKey) continue;
+    counts[key] = (counts[key] || 0) + 1;
+    total++;
+  }
+  if (total === 0) return;
+  for (const key of Object.keys(counts)) {
+    S.transportColorWeights[key] = (counts[key] / total) * 100;
+  }
+  rebuildColorWeightUI();
+}
+
+function enforcePerColorMass(w, h) {
+  const p = transportParticles;
+  if (!p || p.count === 0 || !p.colors) return;
+
+  const weights = S.transportColorWeights;
+  if (!weights) return;
+  const totalParticles = p.count;
+  const weightKeys = Object.keys(weights);
+  if (weightKeys.length === 0) return;
+
+  // Count current particles per color
+  const currentCounts = {};
+  const particlesByColor = {};
+  for (let i = 0; i < p.count; i++) {
+    const key = colorKey(p.colors[i*3], p.colors[i*3+1], p.colors[i*3+2]);
+    if (!currentCounts[key]) { currentCounts[key] = 0; particlesByColor[key] = []; }
+    currentCounts[key]++;
+    particlesByColor[key].push(i);
+  }
+
+  // Compute target count per color
+  const targetCounts = {};
+  let sumRounded = 0;
+  for (const key of weightKeys) {
+    targetCounts[key] = Math.round(totalParticles * weights[key] / 100);
+    sumRounded += targetCounts[key];
+  }
+  // Adjust rounding so sum equals totalParticles
+  let diff = totalParticles - sumRounded;
+  for (let i = 0; diff !== 0 && i < weightKeys.length; i++) {
+    if (diff > 0) { targetCounts[weightKeys[i]]++; diff--; }
+    else if (targetCounts[weightKeys[i]] > 0) { targetCounts[weightKeys[i]]--; diff++; }
+  }
+
+  // Early exit: if current distribution already matches targets, skip rebuild
+  let needsRebuild = false;
+  for (const key of weightKeys) {
+    if ((currentCounts[key] || 0) !== targetCounts[key]) { needsRebuild = true; break; }
+  }
+  // Also check for particles with colors NOT in weightKeys
+  if (!needsRebuild) {
+    for (const key of Object.keys(currentCounts)) {
+      if (!(key in targetCounts)) { needsRebuild = true; break; }
+    }
+  }
+  if (!needsRebuild) return;
+
+  // Group targets by color for spawning new particles at correct positions
+  const targetsByColor = {};
+  for (let i = 0; i < p.targetCount; i++) {
+    const key = colorKey(p.targetColors[i*3], p.targetColors[i*3+1], p.targetColors[i*3+2]);
+    if (!targetsByColor[key]) targetsByColor[key] = [];
+    targetsByColor[key].push(i);
+  }
+
+  // Build new arrays
+  const newPositions = new Float32Array(totalParticles * 2);
+  const newVelocities = new Float32Array(totalParticles * 2);
+  const newColors = new Uint8Array(totalParticles * 3);
+  let writeIdx = 0;
+
+  for (const key of weightKeys) {
+    const target = targetCounts[key] || 0;
+    const existing = particlesByColor[key] || [];
+    const [cr, cg, cb] = key.split(',').map(Number);
+
+    // Keep existing particles up to target count
+    const keepCount = Math.min(existing.length, target);
+    for (let i = 0; i < keepCount; i++) {
+      const srcIdx = existing[i];
+      newPositions[writeIdx * 2] = p.positions[srcIdx * 2];
+      newPositions[writeIdx * 2 + 1] = p.positions[srcIdx * 2 + 1];
+      newVelocities[writeIdx * 2] = p.velocities[srcIdx * 2];
+      newVelocities[writeIdx * 2 + 1] = p.velocities[srcIdx * 2 + 1];
+      newColors[writeIdx * 3] = cr;
+      newColors[writeIdx * 3 + 1] = cg;
+      newColors[writeIdx * 3 + 2] = cb;
+      writeIdx++;
+    }
+
+    // Create new particles if needed
+    const createCount = target - keepCount;
+    const colorTargets = targetsByColor[key] || [];
+    for (let i = 0; i < createCount; i++) {
+      if (colorTargets.length > 0) {
+        const ti = colorTargets[i % colorTargets.length];
+        newPositions[writeIdx * 2] = p.targets[ti * 2];
+        newPositions[writeIdx * 2 + 1] = p.targets[ti * 2 + 1];
+      } else {
+        newPositions[writeIdx * 2] = Math.random() * w;
+        newPositions[writeIdx * 2 + 1] = Math.random() * h;
+      }
+      newVelocities[writeIdx * 2] = 0;
+      newVelocities[writeIdx * 2 + 1] = 0;
+      newColors[writeIdx * 3] = cr;
+      newColors[writeIdx * 3 + 1] = cg;
+      newColors[writeIdx * 3 + 2] = cb;
+      writeIdx++;
+    }
+  }
+
+  p.positions = newPositions;
+  p.velocities = newVelocities;
+  p.colors = newColors;
+  p.count = totalParticles;
+}
+
 // ─── Transport Rendering Entry Point ───
 function renderTransport(ditheredPixels, w, h) {
   if (!S.transportEnabled) return ditheredPixels;
 
-  // Apply mass-lock feedback BEFORE transport rendering
-  applyMassLockFeedback(ditheredPixels, w, h);
+  // Apply mass-lock feedback BEFORE transport rendering (skip when color lock manages mass)
+  if (!S.transportColorLock) {
+    applyMassLockFeedback(ditheredPixels, w, h);
+  }
 
   // Update particle count display
   updateTransportCountDisplay();
@@ -771,6 +1053,11 @@ function renderTransport(ditheredPixels, w, h) {
     initTransportParticles(ditheredPixels, w, h);
   } else {
     updateTransportTargets(ditheredPixels, w, h);
+  }
+
+  // Enforce per-color mass after targets are updated
+  if (S.transportColorLock && S.transportColorWeights) {
+    enforcePerColorMass(transportParticles.w, transportParticles.h);
   }
 
   // Kick off async physics step in worker (non-blocking)
@@ -1258,7 +1545,7 @@ const PRESET_KEYS = [
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
   'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
-  'transportNoOverlap', 'transportSwap',
+  'transportNoOverlap', 'transportSwap', 'transportColorLock',
 ];
 
 function getStateSnapshot() {
@@ -1349,7 +1636,7 @@ const URL_KEY_MAP = {
   ts: 'toneStrength', te: 'transportEnabled', tm: 'transportMode',
   cw: 'customWidth', ch: 'customHeight', dm: 'downscaleMethod',
   ml: 'transportMassLock', td: 'transportTargetDensity', rr: 'transportRepulsionRadius',
-  no: 'transportNoOverlap', sw: 'transportSwap',
+  no: 'transportNoOverlap', sw: 'transportSwap', cl: 'transportColorLock',
 };
 const URL_KEY_REV = {};
 for (const [k, v] of Object.entries(URL_KEY_MAP)) URL_KEY_REV[v] = k;
@@ -1365,7 +1652,7 @@ const DEFAULTS = {
   toneStrength: 0, transportEnabled: false, transportMode: 'overdamped',
   customWidth: 0, customHeight: 0, downscaleMethod: 'average',
   transportMassLock: true, transportTargetDensity: 72, transportRepulsionRadius: 2,
-  transportNoOverlap: true, transportSwap: true,
+  transportNoOverlap: true, transportSwap: true, transportColorLock: false,
 };
 
 function encodeStateToURL() {
@@ -1431,7 +1718,9 @@ function renderLoop(timestamp) {
   // FPS counter
   fpsCounter++;
   if (timestamp - fpsTimer >= 1000) {
-    $('fps-display').textContent = fpsCounter + ' fps';
+    const qualSuffix = S.adaptiveLevel > 0 ? ' Q' + (4 - S.adaptiveLevel) : '';
+    $('fps-display').textContent = fpsCounter + ' fps' + qualSuffix;
+    S.currentFps = fpsCounter;
     fpsCounter = 0;
     fpsTimer = timestamp;
   }
@@ -1574,6 +1863,19 @@ function initUI() {
   });
   bindToggle('transport-no-overlap', v => { S.transportNoOverlap = v; });
   bindToggle('transport-swap', v => { S.transportSwap = v; });
+  bindToggle('transport-color-lock', v => {
+    S.transportColorLock = v;
+    if (v) {
+      rebuildColorWeightUI();
+    } else {
+      $('color-weights-group').style.display = 'none';
+    }
+  });
+  $('color-weights-sample').addEventListener('click', sampleCurrentWeights);
+  $('color-weights-equal').addEventListener('click', () => {
+    buildEqualWeights();
+    rebuildColorWeightUI();
+  });
   bindToggle('export-transparent', v => { S.exportTransparent = v; });
 
   // Selects
@@ -2094,6 +2396,9 @@ function syncUIFromState() {
   $('transport-masslock').classList.toggle('on', S.transportMassLock);
   $('transport-no-overlap').classList.toggle('on', S.transportNoOverlap);
   $('transport-swap').classList.toggle('on', S.transportSwap);
+  $('transport-color-lock').classList.toggle('on', S.transportColorLock);
+  $('color-weights-group').style.display = S.transportColorLock ? '' : 'none';
+  if (S.transportColorLock) rebuildColorWeightUI();
   $('transport-mode').value = S.transportMode;
   $('transport-assignment').value = S.transportAssignment;
   $('transport-init').value = S.transportInit;
