@@ -4,6 +4,15 @@
 
 'use strict';
 
+// ─── xorshift32 PRNG (fast, deterministic per-frame) ───
+let _rngState = 1;
+function xorshift32() {
+  _rngState ^= _rngState << 13;
+  _rngState ^= _rngState >> 17;
+  _rngState ^= _rngState << 5;
+  return (_rngState >>> 0) / 4294967296;
+}
+
 // ─── Flat Spatial Hash Grid (H2/H6: ~1.5-2x faster than Array-of-Arrays) ───
 class SpatialHash {
   constructor(cellSize, width, height) {
@@ -294,12 +303,88 @@ function assignRandom(targets, count, targetCount) {
   return { assigned, mapping };
 }
 
+// ─── Color-Locked Assignment ───
+// Particles only move to targets of their own color
+function assignColorLocked(positions, targets, particleColors, targetColors, count, targetCount, w, h, method) {
+  const assigned = new Float32Array(count * 2);
+  const mapping = new Int32Array(count);
+
+  // Group particle indices by color key
+  const particleGroups = {};
+  for (let i = 0; i < count; i++) {
+    const key = particleColors[i*3] + ',' + particleColors[i*3+1] + ',' + particleColors[i*3+2];
+    if (!particleGroups[key]) particleGroups[key] = [];
+    particleGroups[key].push(i);
+  }
+
+  // Group target indices by color key
+  const targetGroups = {};
+  for (let j = 0; j < targetCount; j++) {
+    const key = targetColors[j*3] + ',' + targetColors[j*3+1] + ',' + targetColors[j*3+2];
+    if (!targetGroups[key]) targetGroups[key] = [];
+    targetGroups[key].push(j);
+  }
+
+  // For each color group, run sub-assignment
+  for (const key of Object.keys(particleGroups)) {
+    const pIndices = particleGroups[key];
+    const tIndices = targetGroups[key] || [];
+    const pCount = pIndices.length;
+    const tCount = tIndices.length;
+
+    if (tCount === 0) {
+      // No targets of this color — particles stay in place
+      for (let i = 0; i < pCount; i++) {
+        const pi = pIndices[i];
+        assigned[pi * 2] = positions[pi * 2];
+        assigned[pi * 2 + 1] = positions[pi * 2 + 1];
+        mapping[pi] = 0;
+      }
+      continue;
+    }
+
+    // Build sub-position and sub-target arrays
+    const subPos = new Float32Array(pCount * 2);
+    for (let i = 0; i < pCount; i++) {
+      const pi = pIndices[i];
+      subPos[i * 2] = positions[pi * 2];
+      subPos[i * 2 + 1] = positions[pi * 2 + 1];
+    }
+    const subTargets = new Float32Array(tCount * 2);
+    for (let j = 0; j < tCount; j++) {
+      const tj = tIndices[j];
+      subTargets[j * 2] = targets[tj * 2];
+      subTargets[j * 2 + 1] = targets[tj * 2 + 1];
+    }
+
+    // Run assignment on the sub-group
+    let subResult;
+    if (method === 'kdtree') {
+      subResult = assignKDTree(subPos, subTargets, pCount, tCount);
+    } else if (method === 'random') {
+      subResult = assignRandom(subTargets, pCount, tCount);
+    } else {
+      subResult = assignGreedy(subPos, subTargets, pCount, tCount, w, h);
+    }
+
+    // Map back to global indices
+    for (let i = 0; i < pCount; i++) {
+      const pi = pIndices[i];
+      assigned[pi * 2] = subResult.assigned[i * 2];
+      assigned[pi * 2 + 1] = subResult.assigned[i * 2 + 1];
+      mapping[pi] = tIndices[subResult.mapping[i]];
+    }
+  }
+
+  return { assigned, mapping };
+}
+
 // ─── Physics Step ───
 function physicsStep(params) {
   const {
     positions, velocities, assignedTargets, count,
     mode, spring, damping, repulsion, repulsionRadius,
-    mass, maxVel, width, height
+    mass, maxVel, width, height, skipProb
   } = params;
 
   const dt = 1.0;
@@ -314,6 +399,8 @@ function physicsStep(params) {
   }
 
   for (let i = 0; i < count; i++) {
+    if (skipProb > 0 && xorshift32() < skipProb) continue;
+
     const px = positions[i*2];
     const py = positions[i*2+1];
     const tx = assignedTargets[i*2];
@@ -410,7 +497,7 @@ const SPIRAL_OFFSETS = (() => {
 let _overlapGrid = null;
 let _overlapGridSize = 0;
 
-function resolveOverlaps(positions, count, w, h) {
+function resolveOverlaps(positions, count, w, h, skipProb) {
   const gridSize = w * h;
   if (!_overlapGrid || _overlapGridSize < gridSize) {
     _overlapGrid = new Int32Array(gridSize);
@@ -419,6 +506,8 @@ function resolveOverlaps(positions, count, w, h) {
   _overlapGrid.fill(-1);
 
   for (let i = 0; i < count; i++) {
+    if (skipProb > 0 && xorshift32() < skipProb) continue;
+
     let rx = Math.round(positions[i * 2]);
     let ry = Math.round(positions[i * 2 + 1]);
     rx = Math.max(0, Math.min(w - 1, rx));
@@ -449,7 +538,7 @@ function resolveOverlaps(positions, count, w, h) {
 }
 
 // ─── Swap Optimization (H6: uses flat spatial hash) ───
-function swapOptimize(positions, assigned, mapping, count, w, h) {
+function swapOptimize(positions, assigned, mapping, count, w, h, colorLock, particleColors) {
   const hash = new SpatialHash(6, w, h);
   for (let i = 0; i < count; i++) {
     hash.insert(i, positions[i * 2], positions[i * 2 + 1]);
@@ -464,6 +553,14 @@ function swapOptimize(positions, assigned, mapping, count, w, h) {
     for (let n = 0; n < qc; n++) {
       const j = buf[n];
       if (j <= i) continue; // avoid double-checking
+
+      // Color lock guard: skip swaps between different-colored particles
+      if (colorLock && particleColors) {
+        const ci = i * 3, cj = j * 3;
+        if (particleColors[ci] !== particleColors[cj] ||
+            particleColors[ci+1] !== particleColors[cj+1] ||
+            particleColors[ci+2] !== particleColors[cj+2]) continue;
+      }
 
       const ax = assigned[i * 2], ay = assigned[i * 2 + 1];
       const bx = assigned[j * 2], by = assigned[j * 2 + 1];
@@ -487,9 +584,141 @@ function swapOptimize(positions, assigned, mapping, count, w, h) {
   }
 }
 
+// ─── Dense-Swap Mode ───
+// Every pixel has a color (no empty cells). Movement is neighbor swaps only.
+
+function rebalanceGrid(grid, target, w, h) {
+  const total = w * h;
+  const budget = Math.ceil(total * 0.05); // max 5% of pixels per frame
+
+  // Count per-color occurrences in grid vs target using packed key
+  const gridCounts = new Map();
+  const targetCounts = new Map();
+  for (let i = 0; i < total; i++) {
+    const gi = i * 3;
+    const gk = (grid[gi] << 16) | (grid[gi + 1] << 8) | grid[gi + 2];
+    const tk = (target[gi] << 16) | (target[gi + 1] << 8) | target[gi + 2];
+    gridCounts.set(gk, (gridCounts.get(gk) || 0) + 1);
+    targetCounts.set(tk, (targetCounts.get(tk) || 0) + 1);
+  }
+
+  // Compute delta: excess (grid has more) / deficit (target has more) per color
+  const excess = new Map();  // colors grid has too many of
+  const deficit = new Map(); // colors grid needs more of
+  const allKeys = new Set([...gridCounts.keys(), ...targetCounts.keys()]);
+  for (const k of allKeys) {
+    const gc = gridCounts.get(k) || 0;
+    const tc = targetCounts.get(k) || 0;
+    if (gc > tc) excess.set(k, gc - tc);
+    if (tc > gc) deficit.set(k, tc - gc);
+  }
+
+  if (excess.size === 0 || deficit.size === 0) return;
+
+  // Scan pixels: where grid color is excess AND target color is deficit → recolor
+  let changed = 0;
+  for (let i = 0; i < total && changed < budget; i++) {
+    const gi = i * 3;
+    const gk = (grid[gi] << 16) | (grid[gi + 1] << 8) | grid[gi + 2];
+    const tk = (target[gi] << 16) | (target[gi + 1] << 8) | target[gi + 2];
+    const ge = excess.get(gk);
+    const td = deficit.get(tk);
+    if (ge > 0 && td > 0 && gk !== tk) {
+      grid[gi]     = (tk >> 16) & 0xff;
+      grid[gi + 1] = (tk >> 8) & 0xff;
+      grid[gi + 2] = tk & 0xff;
+      excess.set(gk, ge - 1);
+      deficit.set(tk, td - 1);
+      changed++;
+    }
+  }
+}
+
+// Cached shuffle array for swap passes
+let _swapIndices = null;
+let _swapIndicesSize = 0;
+
+function swapPass(grid, target, w, h) {
+  const total = w * h;
+
+  // Ensure shuffle buffer
+  if (!_swapIndices || _swapIndicesSize < total) {
+    _swapIndicesSize = total;
+    _swapIndices = new Int32Array(total);
+    for (let i = 0; i < total; i++) _swapIndices[i] = i;
+  }
+
+  // Fisher-Yates shuffle using xorshift32
+  for (let i = total - 1; i > 0; i--) {
+    const j = (xorshift32() * (i + 1)) | 0;
+    const tmp = _swapIndices[i];
+    _swapIndices[i] = _swapIndices[j];
+    _swapIndices[j] = tmp;
+  }
+
+  // Cardinal neighbor offsets: right, down, left, up
+  const dx = [1, 0, -1, 0];
+  const dy = [0, 1, 0, -1];
+
+  for (let s = 0; s < total; s++) {
+    const i = _swapIndices[s];
+    const ix = i % w;
+    const iy = (i / w) | 0;
+
+    // Pick random cardinal neighbor
+    const d = (xorshift32() * 4) | 0;
+    const nx = ix + dx[d];
+    const ny = iy + dy[d];
+    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+    const j = ny * w + nx;
+
+    const gi = i * 3, gj = j * 3;
+    const ti = i * 3, tj = j * 3;
+
+    // Current cost: distSq(grid[i], target[i]) + distSq(grid[j], target[j])
+    const dr1 = grid[gi] - target[ti], dg1 = grid[gi + 1] - target[ti + 1], db1 = grid[gi + 2] - target[ti + 2];
+    const dr2 = grid[gj] - target[tj], dg2 = grid[gj + 1] - target[tj + 1], db2 = grid[gj + 2] - target[tj + 2];
+    const curCost = dr1 * dr1 + dg1 * dg1 + db1 * db1 + dr2 * dr2 + dg2 * dg2 + db2 * db2;
+
+    // Swap cost: distSq(grid[i], target[j]) + distSq(grid[j], target[i])
+    const sr1 = grid[gi] - target[tj], sg1 = grid[gi + 1] - target[tj + 1], sb1 = grid[gi + 2] - target[tj + 2];
+    const sr2 = grid[gj] - target[ti], sg2 = grid[gj + 1] - target[ti + 1], sb2 = grid[gj + 2] - target[ti + 2];
+    const swpCost = sr1 * sr1 + sg1 * sg1 + sb1 * sb1 + sr2 * sr2 + sg2 * sg2 + sb2 * sb2;
+
+    if (swpCost < curCost) {
+      // Swap RGB values
+      const tr = grid[gi], tg = grid[gi + 1], tb = grid[gi + 2];
+      grid[gi] = grid[gj]; grid[gi + 1] = grid[gj + 1]; grid[gi + 2] = grid[gj + 2];
+      grid[gj] = tr; grid[gj + 1] = tg; grid[gj + 2] = tb;
+    }
+  }
+}
+
 // ─── Message Handler ───
 self.onmessage = function(e) {
   const msg = e.data;
+
+  if (msg.type === 'swapStep') {
+    const grid = new Uint8Array(msg.grid);
+    const target = new Uint8Array(msg.target);
+    const w = msg.w, h = msg.h;
+    const passes = msg.passes || 5;
+
+    // Reseed PRNG per frame
+    _rngState = ((msg.frameId || 1) * 2654435761) >>> 0 || 1;
+
+    rebalanceGrid(grid, target, w, h);
+    for (let p = 0; p < passes; p++) {
+      swapPass(grid, target, w, h);
+    }
+
+    self.postMessage({
+      type: 'swapStepResult',
+      grid: grid.buffer,
+      frameId: msg.frameId
+    }, [grid.buffer]);
+    return;
+  }
 
   if (msg.type === 'step') {
     const positions = new Float32Array(msg.positions);
@@ -498,28 +727,44 @@ self.onmessage = function(e) {
     const count = msg.count;
     const targetCount = msg.targetCount;
     const targetColors = msg.targetColors ? new Uint8Array(msg.targetColors) : null;
+    const particleColors = msg.particleColors ? new Uint8Array(msg.particleColors) : null;
+    const colorLock = !!msg.colorLock;
+
+    // Adaptive throttle: compute skip probability from FPS
+    const targetFps = 30;
+    const fps = msg.currentFps || 60;
+    const skipProb = (fps >= targetFps) ? 0 : 1.0 - (fps / targetFps);
+    // Reseed PRNG from frameId for decorrelated per-frame skip patterns
+    _rngState = ((msg.frameId || 1) * 2654435761) >>> 0 || 1;
 
     // Assign targets (returns { assigned, mapping })
     let result;
-    switch (msg.assignment) {
-      case 'kdtree':
-        result = assignKDTree(positions, targets, count, targetCount);
-        break;
-      case 'random':
-        result = assignRandom(targets, count, targetCount);
-        break;
-      default:
-        result = assignGreedy(positions, targets, count, targetCount, msg.width, msg.height);
+    if (colorLock && particleColors && targetColors) {
+      result = assignColorLocked(positions, targets, particleColors, targetColors, count, targetCount, msg.width, msg.height, msg.assignment);
+    } else {
+      switch (msg.assignment) {
+        case 'kdtree':
+          result = assignKDTree(positions, targets, count, targetCount);
+          break;
+        case 'random':
+          result = assignRandom(targets, count, targetCount);
+          break;
+        default:
+          result = assignGreedy(positions, targets, count, targetCount, msg.width, msg.height);
+      }
     }
 
-    // Swap optimization (before physics, after assignment)
-    if (msg.swap) {
-      swapOptimize(positions, result.assigned, result.mapping, count, msg.width, msg.height);
+    // Swap optimization (before physics, after assignment) — skip when under heavy load
+    if (msg.swap && skipProb < 0.3) {
+      swapOptimize(positions, result.assigned, result.mapping, count, msg.width, msg.height, colorLock, particleColors);
     }
 
     // Build per-particle colors from assignment mapping
+    // When color-locked, particles keep their existing colors — skip transfer back
     let colors = null;
-    if (targetColors) {
+    if (colorLock) {
+      // Colors unchanged; main thread retains them. Don't re-transfer.
+    } else if (targetColors) {
       colors = new Uint8Array(count * 3);
       for (let i = 0; i < count; i++) {
         const ti = result.mapping[i];
@@ -540,12 +785,13 @@ self.onmessage = function(e) {
       mass: msg.mass,
       maxVel: msg.maxVel,
       width: msg.width,
-      height: msg.height
+      height: msg.height,
+      skipProb
     });
 
     // Overlap resolution (after physics, before rendering)
     if (msg.noOverlap) {
-      resolveOverlaps(positions, count, msg.width, msg.height);
+      resolveOverlaps(positions, count, msg.width, msg.height, skipProb);
     }
 
     // Transfer back

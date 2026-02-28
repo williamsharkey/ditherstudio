@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="manifest" href="manifest.json?v=9">
+<link rel="manifest" href="manifest.json?v=10">
 <title>Dither Studio</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -119,6 +119,78 @@ html, body {
 
 /* Hidden video element for camera */
 #camera-video { display: none; }
+
+/* ─── Preset Strip ─── */
+#preset-strip-bar {
+  flex-shrink: 0;
+  height: 60px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+#preset-strip-scroll {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  height: 100%;
+  align-items: center;
+}
+#preset-strip-scroll::-webkit-scrollbar { display: none; }
+.pstrip-card {
+  width: 56px;
+  min-width: 56px;
+  height: 48px;
+  border-radius: 6px;
+  background: var(--surface2);
+  border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.1s;
+  padding: 3px 2px;
+}
+.pstrip-card:hover { background: var(--border); }
+.pstrip-card.active { border-color: var(--accent); }
+.pstrip-swatches {
+  display: flex;
+  flex-direction: row;
+  gap: 1px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 50px;
+  overflow: hidden;
+}
+.pstrip-dot {
+  width: 6px;
+  height: 10px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.pstrip-name {
+  font-size: 7px;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 52px;
+  text-align: center;
+  line-height: 1.1;
+}
+.pstrip-add {
+  border: 2px dashed var(--border);
+  color: var(--text-dim);
+  background: transparent;
+}
+.pstrip-add:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ─── Drawer ─── */
 #drawer {
@@ -853,6 +925,11 @@ html, body {
     </div>
   </div>
 
+  <!-- Preset Strip -->
+  <div id="preset-strip-bar">
+    <div id="preset-strip-scroll"></div>
+  </div>
+
   </div><!-- /main-area -->
 
   <!-- Drawer -->
@@ -1096,7 +1173,14 @@ html, body {
               <option value="underdamped">Underdamped</option>
               <option value="ballistic">Ballistic</option>
               <option value="diffusion">Diffusion</option>
+              <option value="dense-swap">Dense Swap</option>
             </select>
+          </div>
+          <div class="ctrl-row" id="swap-rate-row" style="display:none">
+            <span class="ctrl-label">Swap Rate</span>
+            <input type="range" class="ctrl-slider" id="transport-swap-rate" min="1" max="20" value="5">
+            <span class="ctrl-value" data-for="transport-swap-rate">5</span>
+            <button class="ctrl-reset" data-reset="transport-swap-rate" title="Reset">&#8634;</button>
           </div>
           <div class="ctrl-row">
             <span class="ctrl-label">Spring (k)</span>
@@ -1301,13 +1385,13 @@ html, body {
 <!-- Hidden file input -->
 <input type="file" id="file-input" accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none">
 
-<script src="palettes.js?v=9"></script>
-<script src="pipeline.js?v=9"></script>
-<script src="export.js?v=9"></script>
-<script src="app.js?v=9"></script>
+<script src="palettes.js?v=10"></script>
+<script src="pipeline.js?v=10"></script>
+<script src="export.js?v=10"></script>
+<script src="app.js?v=10"></script>
 <script>
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js?v=9', { updateViaCache: 'none' })
+  navigator.serviceWorker.register('sw.js?v=10', { updateViaCache: 'none' })
     .then(reg => { reg.update(); })
     .catch(() => {});
 }

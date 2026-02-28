@@ -69,6 +69,7 @@ const S = {
   transportColorLock: false,
   transportColorWeights: null,
   transportMassLockBrightOffset: 0,
+  transportSwapRate: 5,
 
   // Export
   exportScale: 4,
@@ -100,7 +101,7 @@ const ctx = canvas.getContext('2d', { willReadFrequently: false });
 const video = $('camera-video');
 
 // ─── Worker ───
-const ditherWorker = new Worker('dither-worker.js?v=9');
+const ditherWorker = new Worker('dither-worker.js?v=10');
 
 // ─── Undo/Redo ───
 const undoStack = [];
@@ -114,7 +115,7 @@ const UNDO_KEYS = [
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
   'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
-  'transportNoOverlap', 'transportSwap', 'transportColorLock'
+  'transportNoOverlap', 'transportSwap', 'transportColorLock', 'transportSwapRate'
 ];
 
 function saveUndoState() {
@@ -160,6 +161,9 @@ function setPalette(name) {
   if (S.transportColorLock) {
     buildEqualWeights();
     rebuildColorWeightUI();
+  }
+  // Reset transport so particles reinitialize with new palette colors
+  if (S.transportEnabled) {
     resetTransportParticles();
   }
   S.needsRedraw = true;
@@ -562,13 +566,17 @@ function getSourcePixels() {
 }
 
 // ─── Transport System — Mass-Preserving Particle Physics ───
-const transportWorker = new Worker('transport-worker.js?v=9');
+const transportWorker = new Worker('transport-worker.js?v=10');
 let transportParticles = null;
 let transportWorkerBusy = false;
+let transportGrid = null;
+let transportSwapBusy = false;
 
 function resetTransportParticles() {
   transportParticles = null;
   transportWorkerBusy = false;
+  transportGrid = null;
+  transportSwapBusy = false;
 }
 
 // Handle transport worker responses
@@ -582,6 +590,12 @@ transportWorker.onmessage = function(e) {
       if (msg.colors) {
         transportParticles.colors = new Uint8Array(msg.colors);
       }
+      S.needsRedraw = true;
+    }
+  } else if (msg.type === 'swapStepResult') {
+    transportSwapBusy = false;
+    if (transportGrid) {
+      transportGrid.grid = new Uint8Array(msg.grid);
       S.needsRedraw = true;
     }
   }
@@ -1037,9 +1051,102 @@ function enforcePerColorMass(w, h) {
   p.count = totalParticles;
 }
 
+// ─── Dense-Swap Grid Functions ───
+function initTransportGrid(ditheredPixels, w, h) {
+  const total = w * h;
+  const grid = new Uint8Array(total * 3);
+
+  if (S.transportInit === 'random') {
+    // Shuffle pixel colors randomly
+    const indices = new Int32Array(total);
+    for (let i = 0; i < total; i++) indices[i] = i;
+    for (let i = total - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
+    }
+    for (let i = 0; i < total; i++) {
+      const src = indices[i] * 4;
+      const dst = i * 3;
+      grid[dst] = ditheredPixels[src];
+      grid[dst + 1] = ditheredPixels[src + 1];
+      grid[dst + 2] = ditheredPixels[src + 2];
+    }
+  } else {
+    // Start from dither output
+    for (let i = 0; i < total; i++) {
+      grid[i * 3] = ditheredPixels[i * 4];
+      grid[i * 3 + 1] = ditheredPixels[i * 4 + 1];
+      grid[i * 3 + 2] = ditheredPixels[i * 4 + 2];
+    }
+  }
+
+  transportGrid = { grid, w, h };
+}
+
+function sendSwapStep() {
+  if (transportSwapBusy || !transportGrid || !S.lastResult) return;
+  transportSwapBusy = true;
+
+  const w = transportGrid.w, h = transportGrid.h;
+  const total = w * h;
+
+  // Extract RGB target from current dither output
+  const dithered = S.lastResult;
+  const target = new Uint8Array(total * 3);
+  for (let i = 0; i < total; i++) {
+    target[i * 3] = dithered[i * 4];
+    target[i * 3 + 1] = dithered[i * 4 + 1];
+    target[i * 3 + 2] = dithered[i * 4 + 2];
+  }
+
+  const gridBuf = new Uint8Array(transportGrid.grid);
+
+  transportWorker.postMessage({
+    type: 'swapStep',
+    grid: gridBuf.buffer,
+    target: target.buffer,
+    w, h,
+    passes: S.transportSwapRate,
+    frameId: S.frameId
+  }, [gridBuf.buffer, target.buffer]);
+}
+
+function renderSwapGridPixels(w, h) {
+  if (!transportGrid) return S.lastResult;
+
+  const grid = transportGrid.grid;
+  const total = w * h;
+
+  // Pool output buffer
+  const needed = total * 4;
+  if (_transportPixelBufSize < needed) {
+    _transportPixelBuf = new Uint8ClampedArray(needed);
+    _transportPixelBufSize = needed;
+  }
+  const result = _transportPixelBuf;
+
+  for (let i = 0; i < total; i++) {
+    result[i * 4] = grid[i * 3];
+    result[i * 4 + 1] = grid[i * 3 + 1];
+    result[i * 4 + 2] = grid[i * 3 + 2];
+    result[i * 4 + 3] = 255;
+  }
+
+  return result;
+}
+
 // ─── Transport Rendering Entry Point ───
 function renderTransport(ditheredPixels, w, h) {
   if (!S.transportEnabled) return ditheredPixels;
+
+  // Dense-swap mode: grid-based, no particles
+  if (S.transportMode === 'dense-swap') {
+    if (!transportGrid || transportGrid.w !== w || transportGrid.h !== h) {
+      initTransportGrid(ditheredPixels, w, h);
+    }
+    sendSwapStep();
+    return renderSwapGridPixels(w, h);
+  }
 
   // Apply mass-lock feedback BEFORE transport rendering (skip when color lock manages mass)
   if (!S.transportColorLock) {
@@ -1534,6 +1641,26 @@ const BUILT_IN_PRESETS = {
     algorithm: 'sierra', paletteName: 'EGA',
     pixelScale: 6, serpentine: true,
   },
+  'Essence B-G': {
+    algorithm: 'jarvis', paletteName: 'CGA Palette 1',
+    brightness: 53, contrast: -44, gamma: 0.68,
+    redBrightness: -17, greenBrightness: -6,
+    hueShift: 276, saturation: 154, pixelScale: 5,
+    transportEnabled: true, transportMode: 'ballistic',
+    transportSpring: 0.69, transportDamping: 0.97,
+    transportMass: 3.16, transportMaxVel: 19,
+    transportMassLock: true, transportTargetDensity: -1,
+    transportRepulsionRadius: 1, transportNoOverlap: false, transportSwap: false,
+  },
+  'GB Fireflies': {
+    algorithm: 'atkinson', paletteName: 'Game Boy (DMG)',
+    brightness: 47, contrast: -18, gamma: 0.77,
+    redBrightness: -17, greenBrightness: -6,
+    transportEnabled: true, transportMode: 'ballistic',
+    transportDamping: 0.96, transportMaxVel: 18,
+    transportMassLock: true, transportTargetDensity: 25,
+    transportRepulsionRadius: 1, transportNoOverlap: false, transportSwap: false,
+  },
 };
 
 // Keys to save/load in presets and URL state
@@ -1545,7 +1672,7 @@ const PRESET_KEYS = [
   'downscaleMethod', 'transportEnabled', 'transportMode', 'transportSpring', 'transportDamping',
   'transportRepulsion', 'transportMass', 'transportMaxVel',
   'transportMassLock', 'transportTargetDensity', 'transportRepulsionRadius',
-  'transportNoOverlap', 'transportSwap', 'transportColorLock',
+  'transportNoOverlap', 'transportSwap', 'transportColorLock', 'transportSwapRate',
 ];
 
 function getStateSnapshot() {
@@ -1582,6 +1709,7 @@ function saveUserPreset(name) {
   presets[name] = getStateSnapshot();
   localStorage.setItem('dither-presets', JSON.stringify(presets));
   populatePresetList();
+  populatePresetStrip();
 }
 
 function deleteUserPreset(name) {
@@ -1589,6 +1717,7 @@ function deleteUserPreset(name) {
   delete presets[name];
   localStorage.setItem('dither-presets', JSON.stringify(presets));
   populatePresetList();
+  populatePresetStrip();
 }
 
 function populatePresetList() {
@@ -1637,6 +1766,7 @@ const URL_KEY_MAP = {
   cw: 'customWidth', ch: 'customHeight', dm: 'downscaleMethod',
   ml: 'transportMassLock', td: 'transportTargetDensity', rr: 'transportRepulsionRadius',
   no: 'transportNoOverlap', sw: 'transportSwap', cl: 'transportColorLock',
+  sr: 'transportSwapRate',
 };
 const URL_KEY_REV = {};
 for (const [k, v] of Object.entries(URL_KEY_MAP)) URL_KEY_REV[v] = k;
@@ -1653,6 +1783,7 @@ const DEFAULTS = {
   customWidth: 0, customHeight: 0, downscaleMethod: 'average',
   transportMassLock: true, transportTargetDensity: 72, transportRepulsionRadius: 2,
   transportNoOverlap: true, transportSwap: true, transportColorLock: false,
+  transportSwapRate: 5,
 };
 
 function encodeStateToURL() {
@@ -1736,8 +1867,8 @@ function renderLoop(timestamp) {
       }
     }
     // Transport: kick worker step (non-blocking) and re-render from latest state
-    if (S.transportEnabled && transportParticles) {
-      sendTransportStep();
+    if (S.transportEnabled && (transportParticles || transportGrid)) {
+      if (S.transportMode === 'dense-swap') sendSwapStep(); else sendTransportStep();
       renderResult();
     }
     if (S.recording) updateRecordingFrame();
@@ -1754,8 +1885,8 @@ function renderLoop(timestamp) {
   }
 
   // Transport: kick worker step (non-blocking) and re-render from latest state
-  if (S.transportEnabled && transportParticles) {
-    sendTransportStep();
+  if (S.transportEnabled && (transportParticles || transportGrid)) {
+    if (S.transportMode === 'dense-swap') sendSwapStep(); else sendTransportStep();
     renderResult();
   }
 
@@ -1825,6 +1956,7 @@ function initUI() {
     }
   }, v => v < 0 ? 'auto' : v + '%', 72);
   bindSlider('transport-repulsion-radius', v => { S.transportRepulsionRadius = v; }, v => v.toString(), 2);
+  bindSlider('transport-swap-rate', v => { S.transportSwapRate = v; }, v => v.toString(), 5);
   bindSlider('video-duration', v => {}, v => v + 's', 3);
 
   // Toggles
@@ -1881,7 +2013,15 @@ function initUI() {
   // Selects
   $('transport-mode').addEventListener('change', e => {
     saveUndoState();
+    const oldMode = S.transportMode;
     S.transportMode = e.target.value;
+    const wasDense = oldMode === 'dense-swap';
+    const isDense = S.transportMode === 'dense-swap';
+    if (wasDense !== isDense) {
+      resetTransportParticles();
+      S.needsRedraw = true;
+    }
+    updateTransportControlsVisibility();
   });
   $('transport-assignment').addEventListener('change', e => {
     S.transportAssignment = e.target.value;
@@ -2090,6 +2230,7 @@ function initUI() {
 
   // Presets
   populatePresetList();
+  populatePresetStrip();
 
   $('btn-save-preset').addEventListener('click', () => {
     const name = prompt('Preset name:');
@@ -2127,6 +2268,7 @@ function initUI() {
         Object.assign(existing, imported);
         localStorage.setItem('dither-presets', JSON.stringify(existing));
         populatePresetList();
+        populatePresetStrip();
       } catch (err) {
         console.warn('Invalid preset file:', err);
       }
@@ -2322,6 +2464,136 @@ function bindToggle(id, setter) {
   });
 }
 
+// ─── Transport Controls Visibility ───
+// Hide sparse-only controls when dense-swap is selected, show swap-rate only in dense-swap
+function updateTransportControlsVisibility() {
+  const isDense = S.transportMode === 'dense-swap';
+
+  // Sparse-only control IDs (rows to hide in dense-swap)
+  const sparseIds = [
+    'transport-spring', 'transport-damping', 'transport-repulsion',
+    'transport-mass', 'transport-maxvel', 'transport-assignment',
+    'transport-trails', 'transport-trail-len', 'transport-masslock',
+    'transport-target-density', 'transport-repulsion-radius',
+    'transport-no-overlap', 'transport-swap', 'transport-color-lock'
+  ];
+
+  for (const id of sparseIds) {
+    const el = $(id);
+    if (el) {
+      const row = el.closest('.ctrl-row');
+      if (row) row.style.display = isDense ? 'none' : '';
+    }
+  }
+
+  // Hide color weights group in dense-swap
+  if (isDense) $('color-weights-group').style.display = 'none';
+
+  // Hide transport count row in dense-swap
+  const countRow = $('transport-count-row');
+  if (countRow && isDense) countRow.style.display = 'none';
+
+  // Swap rate row: show only in dense-swap
+  const swapRateRow = $('swap-rate-row');
+  if (swapRateRow) swapRateRow.style.display = isDense ? '' : 'none';
+}
+
+// ─── Visual Preset Strip ───
+function populatePresetStrip() {
+  const scroll = $('preset-strip-scroll');
+  if (!scroll) return;
+  scroll.innerHTML = '';
+
+  const allPresets = [];
+
+  // Built-in presets
+  for (const [name, preset] of Object.entries(BUILT_IN_PRESETS)) {
+    allPresets.push({ name, preset, builtIn: true });
+  }
+
+  // User presets
+  const userPresets = getUserPresets();
+  for (const [name, preset] of Object.entries(userPresets)) {
+    allPresets.push({ name, preset, builtIn: false });
+  }
+
+  for (const { name, preset, builtIn } of allPresets) {
+    const card = document.createElement('div');
+    card.className = 'pstrip-card';
+    card.dataset.presetName = name;
+
+    // Palette swatches
+    const swatches = document.createElement('div');
+    swatches.className = 'pstrip-swatches';
+    const palName = preset.paletteName || 'Black & White';
+    const pal = PALETTES[palName];
+    if (pal) {
+      const maxSwatches = Math.min(pal.colors.length, 8);
+      for (let i = 0; i < maxSwatches; i++) {
+        const dot = document.createElement('span');
+        dot.className = 'pstrip-dot';
+        const c = pal.colors[i];
+        dot.style.background = `rgb(${c[0]},${c[1]},${c[2]})`;
+        swatches.appendChild(dot);
+      }
+    }
+    card.appendChild(swatches);
+
+    // Name
+    const nameEl = document.createElement('div');
+    nameEl.className = 'pstrip-name';
+    nameEl.textContent = name;
+    card.appendChild(nameEl);
+
+    // Click to apply
+    card.addEventListener('click', () => {
+      applyPreset(preset);
+      updatePresetStripActive(name);
+      populatePresetList(); // sync export panel list
+    });
+
+    // Long-press to delete (user presets only)
+    if (!builtIn) {
+      let pressTimer = null;
+      card.addEventListener('pointerdown', e => {
+        pressTimer = setTimeout(() => {
+          if (confirm(`Delete preset "${name}"?`)) {
+            deleteUserPreset(name);
+            populatePresetStrip();
+          }
+        }, 600);
+      });
+      card.addEventListener('pointerup', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+      card.addEventListener('pointercancel', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+      card.addEventListener('pointerleave', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+    }
+
+    scroll.appendChild(card);
+  }
+
+  // "+" card to save new preset
+  const addCard = document.createElement('div');
+  addCard.className = 'pstrip-card pstrip-add';
+  addCard.innerHTML = '<span style="font-size:20px;line-height:1">+</span>';
+  addCard.addEventListener('click', () => {
+    const name = prompt('Preset name:');
+    if (name && name.trim()) {
+      saveUserPreset(name.trim());
+      populatePresetStrip();
+      populatePresetList();
+    }
+  });
+  scroll.appendChild(addCard);
+}
+
+function updatePresetStripActive(name) {
+  const scroll = $('preset-strip-scroll');
+  if (!scroll) return;
+  scroll.querySelectorAll('.pstrip-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.presetName === name);
+  });
+}
+
 // ─── Sync UI from State (after undo/redo/preset load) ───
 function syncUIFromState() {
   $('brightness').value = S.brightness;
@@ -2402,6 +2674,13 @@ function syncUIFromState() {
   $('transport-mode').value = S.transportMode;
   $('transport-assignment').value = S.transportAssignment;
   $('transport-init').value = S.transportInit;
+
+  // Swap rate slider
+  $('transport-swap-rate').value = S.transportSwapRate;
+  updateSliderValue('transport-swap-rate', S.transportSwapRate.toString());
+
+  // Dense-swap visibility
+  updateTransportControlsVisibility();
 
   // Toggles
   $('serpentine-toggle').classList.toggle('on', S.serpentine);
